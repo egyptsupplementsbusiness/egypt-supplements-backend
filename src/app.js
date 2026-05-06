@@ -5,6 +5,7 @@ import morgan from "morgan";
 
 import userRoutes from "./routes/userRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
+import uploadRoutes from "./routes/uploadRoutes.js";
 import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
 
 const app = express();
@@ -27,6 +28,9 @@ app.use("/api/users", userRoutes);
 
 // ---------------------------- Product Routes ----------------------------
 app.use("/api/products", productRoutes);
+
+// ---------------------------- Upload Routes ----------------------------
+app.use("/api/upload", uploadRoutes);
 
 // ---------------------------- Global Error Handler ----------------------------
 app.use(notFound);
