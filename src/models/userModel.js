@@ -27,6 +27,13 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Please add a phone number"],
     },
+    // ==========================================
+    // NEW: Address Field (Optional at registration)
+    // ==========================================
+    address: {
+      type: String,
+      default: "", // Defaults to an empty string so the frontend doesn't read 'undefined'
+    },
     role: {
       type: String,
       enum: ["user", "admin"],
