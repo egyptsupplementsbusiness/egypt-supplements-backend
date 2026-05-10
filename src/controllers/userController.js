@@ -146,30 +146,36 @@ export const updateUserPassword = async (req, res) => {
 
 // ---------------------------- Get All Users (Admin) ----------------------------
 export const getUsers = async (req, res) => {
-  // 1. Pagination setup (Defaults to page 1, 10 items per page)
   const pageSize = Number(req.query.limit) || 10;
   const page = Number(req.query.page) || 1;
 
-  // 2. Search setup (Looks for matching names OR emails, case-insensitive)
-  const keyword = req.query.keyword
-    ? {
-        $or: [
-          { name: { $regex: req.query.keyword, $options: "i" } },
-          { email: { $regex: req.query.keyword, $options: "i" } },
-        ],
-      }
-    : {};
+  let keywordFilter = {};
 
-  // 3. Count total matching documents so the frontend knows how many pages exist
-  const count = await User.countDocuments({ ...keyword });
+  if (req.query.keyword) {
+    // 1. Remove accidental spaces the admin might type at the end
+    const rawKeyword = req.query.keyword.trim();
 
-  // 4. Fetch the actual users, skipping the ones from previous pages
-  const users = await User.find({ ...keyword })
+    // 2. Escape special characters (like + or -) so regex doesn't break
+    const safeKeyword = rawKeyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    keywordFilter = {
+      $or: [
+        { name: { $regex: safeKeyword, $options: "i" } },
+        { email: { $regex: safeKeyword, $options: "i" } },
+        { phone: { $regex: safeKeyword, $options: "i" } },
+      ],
+    };
+  }
+
+  // 3. Apply the filter to the count
+  const count = await User.countDocuments({ ...keywordFilter });
+
+  // 4. Apply the filter to the database query
+  const users = await User.find({ ...keywordFilter })
     .select("-password -__v")
     .limit(pageSize)
     .skip(pageSize * (page - 1));
 
-  // 5. Send back a data object that your React data-table can easily consume
   res.status(200).json({
     users,
     page,
