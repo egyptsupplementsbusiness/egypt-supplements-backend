@@ -76,6 +76,7 @@ export const getUserProfile = async (req, res) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
+      address: user.address || "",
     });
   } else {
     res.status(404);
