@@ -47,7 +47,17 @@ export const loginUser = async (req, res) => {
 
   const user = await User.findOne({ email }).select("+password");
 
+  // Check if the user exists AND the password is correct
   if (user && (await user.matchPassword(password))) {
+    // --- NEW: Check if the account is suspended/deactivated ---
+    if (!user.isActive) {
+      res.status(403);
+      throw new Error(
+        "This account has been deactivated. Please contact support.",
+      );
+    }
+
+    // If active, proceed with login
     res.status(200).json({
       message: "User logged in successfully!",
       user: {
