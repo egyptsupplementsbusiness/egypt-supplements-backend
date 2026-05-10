@@ -95,8 +95,13 @@ export const updateUserProfile = async (req, res) => {
   const user = await User.findById(req.user._id);
 
   if (user) {
+    // Update basic info
     user.name = req.body.name || user.name;
     user.phone = req.body.phone || user.phone;
+
+    if (req.body.address !== undefined) {
+      user.address = req.body.address;
+    }
 
     const updatedUser = await user.save();
 
@@ -107,6 +112,7 @@ export const updateUserProfile = async (req, res) => {
         name: updatedUser.name,
         email: updatedUser.email,
         phone: updatedUser.phone,
+        address: updatedUser.address,
         role: updatedUser.role,
       },
     });
