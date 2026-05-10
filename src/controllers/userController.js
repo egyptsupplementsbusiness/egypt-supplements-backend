@@ -232,6 +232,7 @@ export const updateUser = async (req, res) => {
   const user = await User.findById(req.params.id);
 
   if (user) {
+    // Check if email is being changed and if it's already taken
     if (req.body.email && req.body.email !== user.email) {
       const emailExists = await User.findOne({ email: req.body.email });
       if (emailExists) {
@@ -240,10 +241,16 @@ export const updateUser = async (req, res) => {
       }
     }
 
+    // Update standard string fields
     user.name = req.body.name || user.name;
     user.email = req.body.email || user.email;
     user.phone = req.body.phone || user.phone;
     user.role = req.body.role || user.role;
+
+    // 🔥 THE FIX: Explicitly check for undefined since it's a boolean
+    if (req.body.isActive !== undefined) {
+      user.isActive = req.body.isActive;
+    }
 
     const updatedUser = await user.save();
 
@@ -255,6 +262,7 @@ export const updateUser = async (req, res) => {
         email: updatedUser.email,
         phone: updatedUser.phone,
         role: updatedUser.role,
+        isActive: updatedUser.isActive, // <-- Added this to return the new status
       },
     });
   } else {
