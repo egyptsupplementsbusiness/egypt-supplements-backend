@@ -27,17 +27,21 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Please add a phone number"],
     },
-    // ==========================================
-    // NEW: Address Field (Optional at registration)
-    // ==========================================
     address: {
       type: String,
-      default: "", // Defaults to an empty string so the frontend doesn't read 'undefined'
+      default: "",
     },
     role: {
       type: String,
       enum: ["user", "admin"],
       default: "user",
+    },
+    // ==========================================
+    // NEW: Soft Delete / Ban status
+    // ==========================================
+    isActive: {
+      type: Boolean,
+      default: true,
     },
   },
   {

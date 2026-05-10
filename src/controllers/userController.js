@@ -143,22 +143,39 @@ export const updateUserPassword = async (req, res) => {
     throw new Error("Incorrect old password");
   }
 };
+
 // ---------------------------- Get All Users (Admin) ----------------------------
 export const getUsers = async (req, res) => {
-  const users = await User.find({}).select("-password -__v");
-  res.status(200).json(users);
-};
+  // 1. Pagination setup (Defaults to page 1, 10 items per page)
+  const pageSize = Number(req.query.limit) || 10;
+  const page = Number(req.query.page) || 1;
 
-// ---------------------------- Get User By ID (Admin) ----------------------------
-export const getUserById = async (req, res) => {
-  const user = await User.findById(req.params.id).select("-password -__v");
+  // 2. Search setup (Looks for matching names OR emails, case-insensitive)
+  const keyword = req.query.keyword
+    ? {
+        $or: [
+          { name: { $regex: req.query.keyword, $options: "i" } },
+          { email: { $regex: req.query.keyword, $options: "i" } },
+        ],
+      }
+    : {};
 
-  if (user) {
-    res.status(200).json(user);
-  } else {
-    res.status(404);
-    throw new Error("User not found");
-  }
+  // 3. Count total matching documents so the frontend knows how many pages exist
+  const count = await User.countDocuments({ ...keyword });
+
+  // 4. Fetch the actual users, skipping the ones from previous pages
+  const users = await User.find({ ...keyword })
+    .select("-password -__v")
+    .limit(pageSize)
+    .skip(pageSize * (page - 1));
+
+  // 5. Send back a data object that your React data-table can easily consume
+  res.status(200).json({
+    users,
+    page,
+    pages: Math.ceil(count / pageSize),
+    totalUsers: count,
+  });
 };
 
 // ---------------------------- Delete User (Admin) ----------------------------
@@ -168,11 +185,26 @@ export const deleteUser = async (req, res) => {
   if (user) {
     if (user._id.toString() === req.user._id.toString()) {
       res.status(400);
-      throw new Error("You cannot delete your own admin account");
+      throw new Error("You cannot suspend your own admin account");
     }
 
-    await user.deleteOne();
-    res.status(200).json({ message: "User removed successfully" });
+    // 🔥 Change from hard delete to soft delete
+    user.isActive = false;
+    await user.save();
+
+    res.status(200).json({ message: "User suspended successfully" });
+  } else {
+    res.status(404);
+    throw new Error("User not found");
+  }
+};
+
+// ---------------------------- Get User By ID (Admin) ----------------------------
+export const getUserById = async (req, res) => {
+  const user = await User.findById(req.params.id).select("-password -__v");
+
+  if (user) {
+    res.status(200).json(user);
   } else {
     res.status(404);
     throw new Error("User not found");
