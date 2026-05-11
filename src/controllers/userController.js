@@ -270,3 +270,26 @@ export const updateUser = async (req, res) => {
     throw new Error("User not found");
   }
 };
+
+// ---------------------------- Get User Analytics (Admin Dashboard) ----------------------------
+export const getUserAnalytics = async (req, res) => {
+  // Calculate the timestamp for exactly 30 days ago
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  // Run all count queries concurrently for maximum performance
+  const [totalUsers, activeUsers, suspendedUsers, newUsersThisMonth] =
+    await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ isActive: true }),
+      User.countDocuments({ isActive: false }),
+      // This assumes you have { timestamps: true } enabled in your User schema
+      User.countDocuments({ createdAt: { $gte: thirtyDaysAgo } }),
+    ]);
+
+  res.status(200).json({
+    totalUsers,
+    activeUsers,
+    suspendedUsers,
+    newUsersThisMonth,
+  });
+};

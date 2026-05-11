@@ -9,6 +9,7 @@ import {
   getUserById,
   updateUser,
   deleteUser,
+  getUserAnalytics,
 } from "../controllers/userController.js";
 import { protect, admin } from "../middleware/authMiddleware.js";
 import { validate } from "../middleware/validateMiddleware.js";
@@ -34,6 +35,7 @@ router.put("/profile/password", protect, validate(updatePasswordSchema), updateU
 // ---------------------------- Protected Admin Routes ----------------------------
 router.get("/admin", protect, admin, getUsers);
 router.get("/admin/:id", protect, admin, getUserById);
+router.get("/admin/analytics", protect, admin, getUserAnalytics);
 router.patch("/admin/:id", protect, admin, validate(adminUpdateUserSchema), updateUser);
 router.delete("/admin/:id", protect, admin, deleteUser);
 
