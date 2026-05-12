@@ -13,7 +13,10 @@ export const productSchema = z.object({
       z.object({
         flavor: z.string().optional(),
         size: z.string().optional(),
-        servings: z.number().nonnegative().nullable(),
+
+        // ADDED .optional() HERE: Now it happily accepts undefined if omitted
+        servings: z.number().nonnegative().nullable().optional(),
+
         price: z.number().positive("Price must be greater than 0"),
         discountedPrice: z.number().nonnegative().nullable().optional(),
         countInStock: z.number().int().nonnegative(),
