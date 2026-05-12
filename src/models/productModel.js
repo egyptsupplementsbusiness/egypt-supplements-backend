@@ -11,7 +11,7 @@ const variantSchema = new mongoose.Schema({
     default: "", 
   },
   servings: {
-    type: Number,
+    type: String,
     default: null, 
     min: [0, "Servings cannot be negative"], // Added
   },
