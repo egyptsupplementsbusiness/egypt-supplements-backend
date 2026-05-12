@@ -34,11 +34,29 @@ export const createProduct = async (req, res) => {
 
   if (existingProduct) {
     variants.forEach((incomingVariant) => {
+      // ==========================================
+      // BULLETPROOF VARIANT MATCHING
+      // ==========================================
       const matchingVariantIndex = existingProduct.variants.findIndex(
-        (existingVar) =>
-          existingVar.flavor === incomingVariant.flavor &&
-          existingVar.size === incomingVariant.size &&
-          existingVar.servings === incomingVariant.servings,
+        (existingVar) => {
+          // Normalize strings (handles undefined, null, "", and case/spacing differences)
+          const dbFlavor = (existingVar.flavor || "").trim().toLowerCase();
+          const incFlavor = (incomingVariant.flavor || "").trim().toLowerCase();
+
+          const dbSize = (existingVar.size || "").trim().toLowerCase();
+          const incSize = (incomingVariant.size || "").trim().toLowerCase();
+
+          // Normalize numbers (treats undefined and null as the exact same thing)
+          const dbServings = existingVar.servings || null;
+          const incServings = incomingVariant.servings || null;
+
+          // Check if all 3 match perfectly
+          return (
+            dbFlavor === incFlavor &&
+            dbSize === incSize &&
+            dbServings === incServings
+          );
+        },
       );
 
       if (matchingVariantIndex > -1) {
