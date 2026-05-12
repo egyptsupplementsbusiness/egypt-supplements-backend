@@ -5,6 +5,8 @@ import {
   getProductById,
   deleteProduct,
   updateProduct,
+  getAdminProducts, // <-- New Import
+  getAdminProductById, // <-- New Import
 } from "../controllers/productController.js";
 import { protect, admin } from "../middleware/authMiddleware.js";
 import { validate } from "../middleware/validateMiddleware.js";
@@ -16,6 +18,10 @@ import {
 const router = express.Router();
 
 // ---------------------------- Admin Routes ----------------------------
+// Placed at the top so Express doesn't confuse "admin" for an ID parameter
+router.get("/admin/all", protect, admin, getAdminProducts);
+router.get("/admin/:id", protect, admin, getAdminProductById);
+
 router.post("/add", protect, admin, validate(productSchema), createProduct);
 router.patch(
   "/edit/:id",

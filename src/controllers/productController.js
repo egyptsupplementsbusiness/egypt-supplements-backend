@@ -87,6 +87,85 @@ export const createProduct = async (req, res) => {
   });
 };
 
+// ---------------------------- Get All Products (Admin) ----------------------------
+export const getAdminProducts = async (req, res) => {
+  // 1. Pagination Setup (Admins usually prefer denser lists, default to 20)
+  const pageSize = Number(req.query.limit) || 20;
+  const page = Number(req.query.page) || 1;
+
+  // 2. Search by Keyword (Name OR SKU for Admins)
+  const keyword = req.query.keyword
+    ? {
+        $or: [
+          { name: { $regex: req.query.keyword, $options: "i" } },
+          { "variants.sku": { $regex: req.query.keyword, $options: "i" } },
+        ],
+      }
+    : {};
+
+  // 3. Filters (Brand, Category) - Admins usually don't need "inStock" filters
+  // because they need to see out-of-stock items, but we can leave the option open.
+  const brandFilter = req.query.brand
+    ? { brand: req.query.brand.toLowerCase() }
+    : {};
+  const categoryFilter = req.query.category
+    ? { category: req.query.category.toLowerCase() }
+    : {};
+  const inStockFilter =
+    req.query.inStock === "true" ? { "variants.countInStock": { $gt: 0 } } : {};
+  const outOfStockFilter =
+    req.query.outOfStock === "true"
+      ? { "variants.countInStock": { $lte: 0 } }
+      : {};
+
+  const query = {
+    ...keyword,
+    ...brandFilter,
+    ...categoryFilter,
+    ...inStockFilter,
+    ...outOfStockFilter,
+  };
+
+  // 4. Dynamic Sorting Setup
+  let sortObject = { createdAt: -1 }; // Default: Newest first
+
+  if (req.query.sort === "lowest") {
+    sortObject = { "variants.price": 1 };
+  } else if (req.query.sort === "highest") {
+    sortObject = { "variants.price": -1 };
+  } else if (req.query.sort === "stock_lowest") {
+    sortObject = { "variants.countInStock": 1 }; // Super useful for admins seeing what to reorder
+  }
+
+  // 5. Fetch the data
+  const count = await Product.countDocuments(query);
+  const products = await Product.find(query)
+    .sort(sortObject)
+    .limit(pageSize)
+    .skip(pageSize * (page - 1));
+
+  res.status(200).json({
+    products,
+    page,
+    pages: Math.ceil(count / pageSize),
+    totalProducts: count,
+  });
+};
+
+// ---------------------------- Get Single Product (Admin) ----------------------------
+export const getAdminProductById = async (req, res) => {
+  // Separated so in the future you can pull in soft-deleted products,
+  // supplier data, or cost-basis data that public users shouldn't see.
+  const product = await Product.findById(req.params.id);
+
+  if (product) {
+    res.status(200).json(product);
+  } else {
+    res.status(404);
+    throw new Error("Product not found");
+  }
+};
+
 // ---------------------------- Get All Products (Public Catalog) ----------------------------
 export const getProducts = async (req, res) => {
   // 1. Pagination Setup
@@ -111,11 +190,9 @@ export const getProducts = async (req, res) => {
     ? { category: req.query.category.toLowerCase() }
     : {};
 
-  // NEW: Featured Items Only
   const featuredFilter =
     req.query.featured === "true" ? { isFeatured: true } : {};
 
-  // NEW: In-Stock Items Only (Checks if ANY variant has stock > 0)
   const inStockFilter =
     req.query.inStock === "true" ? { "variants.countInStock": { $gt: 0 } } : {};
 
@@ -132,16 +209,16 @@ export const getProducts = async (req, res) => {
   let sortObject = { createdAt: -1 }; // Default: Newest first
 
   if (req.query.sort === "lowest") {
-    sortObject = { "variants.price": 1 }; // Price: Low to High (1 is ascending)
+    sortObject = { "variants.price": 1 };
   } else if (req.query.sort === "highest") {
-    sortObject = { "variants.price": -1 }; // Price: High to Low (-1 is descending)
+    sortObject = { "variants.price": -1 };
   }
 
   // 5. Fetch the data
   const count = await Product.countDocuments(query);
 
   const products = await Product.find(query)
-    .sort(sortObject) // Pass the dynamic sort object here
+    .sort(sortObject)
     .limit(pageSize)
     .skip(pageSize * (page - 1));
 
