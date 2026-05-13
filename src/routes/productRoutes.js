@@ -5,6 +5,7 @@ import {
   getProductById,
   deleteProduct,
   updateProduct,
+  getFiltersMetadata,
   getAdminProducts, // <-- New Import
   getAdminProductById, // <-- New Import
 } from "../controllers/productController.js";
@@ -34,6 +35,7 @@ router.delete("/delete/:id", protect, admin, deleteProduct);
 
 // ---------------------------- Public Routes ----------------------------
 router.get("/", getProducts);
+router.get("/filters/metadata", getFiltersMetadata);
 router.get("/:id", getProductById);
 
 export default router;

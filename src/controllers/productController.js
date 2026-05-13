@@ -363,3 +363,47 @@ export const deleteProduct = async (req, res) => {
     throw new Error("Product not found");
   }
 };
+
+// ---------------------------- Get Filters & Metadata (Public/Admin) ----------------------------
+export const getFiltersMetadata = async (req, res) => {
+  try {
+    // 1. Fetch unique categories and brands natively from MongoDB
+    const categories = await Product.distinct("category");
+    const brands = await Product.distinct("brand");
+
+    // 2. Fetch total number of distinct product listings
+    const totalProducts = await Product.countDocuments();
+
+    // 3. Aggregate total physical units in stock across ALL variants
+    // This digs into every product, looks at every variant array, and sums the countInStock
+    const stockData = await Product.aggregate([
+      { $unwind: "$variants" },
+      {
+        $group: {
+          _id: null,
+          totalPhysicalStock: { $sum: "$variants.countInStock" },
+        },
+      },
+    ]);
+    
+    const totalPhysicalStock = stockData.length > 0 ? stockData[0].totalPhysicalStock : 0;
+
+    res.status(200).json({
+      categories: {
+        count: categories.length,
+        names: categories, // Array of strings e.g. ["protein", "creatine"]
+      },
+      brands: {
+        count: brands.length,
+        names: brands, // Array of strings e.g. ["muscletech", "optimum nutrition"]
+      },
+      inventory: {
+        totalProducts: totalProducts, // Number of distinct products (e.g. 50)
+        totalPhysicalStock: totalPhysicalStock, // Number of actual physical tubs/bottles in the warehouse (e.g. 3500)
+      },
+    });
+  } catch (error) {
+    res.status(500);
+    throw new Error("Failed to fetch metadata: " + error.message);
+  }
+};
