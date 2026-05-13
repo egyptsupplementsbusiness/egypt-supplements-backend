@@ -4,36 +4,36 @@ import mongoose from "mongoose";
 const variantSchema = new mongoose.Schema({
   flavor: {
     type: String,
-    default: "", 
+    default: "",
   },
   size: {
     type: String,
-    default: "", 
+    default: "",
   },
   servings: {
     type: String,
-    default: null, 
-    min: [0, "Servings cannot be negative"], // Added
+    default: "", // Changed from null to an empty string
+    // REMOVED: min: [0, ...] because strings don't use 'min' in Mongoose
   },
   price: {
     type: Number,
-    required: [true, "Please add a price"], 
-    min: [0, "Price cannot be negative"], // Added
+    required: [true, "Please add a price"],
+    min: [0, "Price cannot be negative"],
   },
   discountedPrice: {
     type: Number,
     default: null,
-    min: [0, "Discounted price cannot be negative"], // Added
+    min: [0, "Discounted price cannot be negative"],
   },
   countInStock: {
     type: Number,
-    required: true, 
+    required: true,
     default: 0,
-    min: [0, "Stock cannot be negative"], // Added
+    min: [0, "Stock cannot be negative"],
   },
   sku: {
     type: String,
-    default: "", 
+    default: "",
   },
 });
 
@@ -56,11 +56,11 @@ const productSchema = new mongoose.Schema(
     summary: {
       type: String,
       maxLength: [200, "Summary cannot exceed 200 characters"],
-      default: "", 
+      default: "",
     },
     details: {
       type: String,
-      default: "", 
+      default: "",
     },
     image: {
       type: String,
