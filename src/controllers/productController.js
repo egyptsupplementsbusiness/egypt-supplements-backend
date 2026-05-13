@@ -1,4 +1,31 @@
 import Product from "../models/productModel.js";
+import { v2 as cloudinary } from "cloudinary";
+
+// ---------------------------- Helper: Extract Public ID ----------------------------
+const extractPublicId = (url) => {
+  if (!url) return null;
+  try {
+    const parts = url.split("/");
+    const uploadIndex = parts.indexOf("upload");
+    if (uploadIndex === -1) return null; // Not a standard Cloudinary URL
+
+    let afterUpload = parts.slice(uploadIndex + 1);
+
+    if (afterUpload[0].startsWith("v") && !isNaN(afterUpload[0].substring(1))) {
+      afterUpload.shift();
+    }
+
+    const publicIdWithExt = afterUpload.join("/");
+    const lastDot = publicIdWithExt.lastIndexOf(".");
+
+    return lastDot !== -1
+      ? publicIdWithExt.substring(0, lastDot)
+      : publicIdWithExt;
+  } catch (error) {
+    console.error("Failed to extract Cloudinary public ID", error);
+    return null;
+  }
+};
 
 // ---------------------------- Create / Append Product (Admin) ----------------------------
 export const createProduct = async (req, res) => {
@@ -266,17 +293,36 @@ export const updateProduct = async (req, res) => {
   const product = await Product.findById(req.params.id);
 
   if (product) {
+    // Check if a new image URL is being sent AND if it's different from the old one
+    if (req.body.image && req.body.image !== product.image) {
+      const oldPublicId = extractPublicId(product.image);
+
+      if (oldPublicId) {
+        try {
+          await cloudinary.uploader.destroy(oldPublicId);
+          console.log(`Successfully deleted old image: ${oldPublicId}`);
+        } catch (error) {
+          console.error("Cloudinary deletion error (Update):", error);
+          // We log the error but don't throw it, so the DB still updates!
+        }
+      }
+    }
+
+    // Update standard fields
     product.name = req.body.name || product.name;
     product.brand = req.body.brand || product.brand;
     product.category = req.body.category || product.category;
     product.summary = req.body.summary || product.summary;
     product.details = req.body.details || product.details;
     product.image = req.body.image || product.image;
+
+    // Handle booleans safely
     product.isFeatured =
       req.body.isFeatured !== undefined
         ? req.body.isFeatured
         : product.isFeatured;
 
+    // Handle arrays safely
     if (req.body.variants) {
       product.variants = req.body.variants;
     }
@@ -297,6 +343,19 @@ export const deleteProduct = async (req, res) => {
   const product = await Product.findById(req.params.id);
 
   if (product) {
+    // Delete the image from Cloudinary first
+    const publicId = extractPublicId(product.image);
+
+    if (publicId) {
+      try {
+        await cloudinary.uploader.destroy(publicId);
+        console.log(`Successfully deleted image: ${publicId}`);
+      } catch (error) {
+        console.error("Cloudinary deletion error (Delete):", error);
+      }
+    }
+
+    // Then delete from the database
     await product.deleteOne();
     res.status(200).json({ message: "Product removed successfully" });
   } else {
