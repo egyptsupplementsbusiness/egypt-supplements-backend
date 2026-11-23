@@ -1,31 +1,92 @@
 import Product from "../models/productModel.js";
-import { v2 as cloudinary } from "cloudinary";
+import Order from "../models/orderModel.js";
+import { LOW_STOCK_THRESHOLD } from "../config/constants.js";
+import { destroyImageIfUnused } from "../utils/cloudinaryUtils.js";
 
-// ---------------------------- Helper: Extract Public ID ----------------------------
-const extractPublicId = (url) => {
-  if (!url) return null;
-  try {
-    const parts = url.split("/");
-    const uploadIndex = parts.indexOf("upload");
-    if (uploadIndex === -1) return null; // Not a standard Cloudinary URL
+// ---------------------------- Helpers: Safe Query Filters ----------------------------
+// Escape user input before putting it in a $regex (stops errors on "(" and slow regexes)
+const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    let afterUpload = parts.slice(uploadIndex + 1);
+// Keyword search. Matches the product name, brand, category and flavors (and
+// SKU for admins), so a shopper can search "chocolate" or "pre workout" too.
+const buildKeywordFilter = (rawKeyword, includeSku = false) => {
+  const keyword = typeof rawKeyword === "string" ? rawKeyword.trim() : "";
+  if (!keyword) return {};
 
-    if (afterUpload[0].startsWith("v") && !isNaN(afterUpload[0].substring(1))) {
-      afterUpload.shift();
-    }
-
-    const publicIdWithExt = afterUpload.join("/");
-    const lastDot = publicIdWithExt.lastIndexOf(".");
-
-    return lastDot !== -1
-      ? publicIdWithExt.substring(0, lastDot)
-      : publicIdWithExt;
-  } catch (error) {
-    console.error("Failed to extract Cloudinary public ID", error);
-    return null;
-  }
+  const regex = { $regex: escapeRegex(keyword), $options: "i" };
+  const fields = [
+    { name: regex },
+    { brand: regex },
+    { category: regex },
+    { "variants.flavor": regex },
+  ];
+  if (includeSku) fields.push({ "variants.sku": regex });
+  return { $or: fields };
 };
+
+// ---------------------------- Public view of a product ----------------------------
+// The public never sees exact stock numbers. Each option reports only whether
+// it's in stock, plus "X left" when it's running low (to nudge a sale).
+const publicVariant = (variant) => {
+  const stock = variant.countInStock || 0;
+  const low = stock > 0 && stock <= LOW_STOCK_THRESHOLD;
+  return {
+    _id: variant._id,
+    flavor: variant.flavor,
+    size: variant.size,
+    servings: variant.servings,
+    price: variant.price,
+    inStock: stock > 0,
+    lowStock: low,
+    ...(low ? { remaining: stock } : {}),
+  };
+};
+
+const publicProduct = (product) => {
+  const p = typeof product.toObject === "function" ? product.toObject() : product;
+  return {
+    _id: p._id,
+    name: p.name,
+    brand: p.brand,
+    category: p.category,
+    summary: p.summary,
+    details: p.details,
+    image: p.image,
+    isFeatured: p.isFeatured,
+    createdAt: p.createdAt,
+    variants: (p.variants || []).map(publicVariant),
+    inStock: (p.variants || []).some((v) => (v.countInStock || 0) > 0),
+  };
+};
+
+// Brand filter: accepts one brand or a comma separated list ("optimum nutrition,muscletech")
+const buildBrandFilter = (rawBrand) => {
+  if (typeof rawBrand !== "string") return {};
+  const brands = rawBrand
+    .split(",")
+    .map((b) => b.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (brands.length === 0) return {};
+  return brands.length === 1 ? { brand: brands[0] } : { brand: { $in: brands } };
+};
+
+// Category filter: treats "-" and spaces as the same, so the URL slug
+// "pre-workout" matches "pre-workout" or "pre workout" in the database
+const buildCategoryFilter = (rawCategory) => {
+  if (typeof rawCategory !== "string") return {};
+  const words = rawCategory
+    .trim()
+    .toLowerCase()
+    .split(/[\s-]+/)
+    .filter(Boolean);
+
+  if (words.length === 0) return {};
+  const pattern = `^${words.map(escapeRegex).join("[\\s-]+")}$`;
+  return { category: { $regex: pattern, $options: "i" } };
+};
+
+const normalizeText = (value = "") => String(value ?? "").trim().toLowerCase();
 
 // ---------------------------- Create / Append Product (Admin) ----------------------------
 export const createProduct = async (req, res) => {
@@ -48,11 +109,12 @@ export const createProduct = async (req, res) => {
   }
 
   // 1. Normalize strings to prevent case-sensitive duplicates
-  const normalizedName = name.trim().toLowerCase();
-  const normalizedBrand = brand.trim().toLowerCase();
-  const normalizedCategory = category.trim().toLowerCase();
+  const normalizedName = normalizeText(name);
+  const normalizedBrand = normalizeText(brand);
+  const normalizedCategory = normalizeText(category);
 
-  // 2. Check if the exact product already exists
+  // 2. Warn (don't merge) if a product with the same name, brand and category
+  // already exists, so the admin decides what to do.
   const existingProduct = await Product.findOne({
     name: normalizedName,
     brand: normalizedBrand,
@@ -60,56 +122,14 @@ export const createProduct = async (req, res) => {
   });
 
   if (existingProduct) {
-    variants.forEach((incomingVariant) => {
-      // ==========================================
-      // BULLETPROOF VARIANT MATCHING
-      // ==========================================
-      const matchingVariantIndex = existingProduct.variants.findIndex(
-        (existingVar) => {
-          // Normalize strings (handles undefined, null, "", and case/spacing differences)
-          const dbFlavor = (existingVar.flavor || "").trim().toLowerCase();
-          const incFlavor = (incomingVariant.flavor || "").trim().toLowerCase();
-
-          const dbSize = (existingVar.size || "").trim().toLowerCase();
-          const incSize = (incomingVariant.size || "").trim().toLowerCase();
-
-          // Normalize numbers (treats undefined and null as the exact same thing)
-          const dbServings = existingVar.servings || null;
-          const incServings = incomingVariant.servings || null;
-
-          // Check if all 3 match perfectly
-          return (
-            dbFlavor === incFlavor &&
-            dbSize === incSize &&
-            dbServings === incServings
-          );
-        },
-      );
-
-      if (matchingVariantIndex > -1) {
-        // Accumulate stock and update prices
-        existingProduct.variants[matchingVariantIndex].countInStock +=
-          incomingVariant.countInStock;
-        existingProduct.variants[matchingVariantIndex].price =
-          incomingVariant.price;
-
-        if (incomingVariant.discountedPrice !== undefined) {
-          existingProduct.variants[matchingVariantIndex].discountedPrice =
-            incomingVariant.discountedPrice;
-        }
-      } else {
-        // Push brand new flavor/size
-        existingProduct.variants.push(incomingVariant);
-      }
-    });
-
-    const updatedProduct = await existingProduct.save();
-
-    return res.status(200).json({
-      message:
-        "Product exists! Inventory updated and new variants added where necessary.",
-      product: updatedProduct,
-    });
+    // Free the image that was just uploaded for this blocked attempt
+    if (image && image !== existingProduct.image) {
+      await destroyImageIfUnused(image);
+    }
+    res.status(409);
+    throw new Error(
+      `A product called "${name}"${normalizedBrand ? ` by ${brand}` : ""} already exists. Edit that one to add stock or options, or use a different name.`,
+    );
   }
 
   // 3. Create fresh product using normalized fields
@@ -135,32 +155,22 @@ export const createProduct = async (req, res) => {
 // ---------------------------- Get All Products (Admin) ----------------------------
 export const getAdminProducts = async (req, res) => {
   // 1. Pagination Setup (Admins usually prefer denser lists, default to 20)
-  const pageSize = Number(req.query.limit) || 20;
-  const page = Number(req.query.page) || 1;
+  const pageSize = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+  const page = Math.max(Math.floor(Number(req.query.page)) || 1, 1);
 
   // 2. Search by Keyword (Name OR SKU for Admins)
-  const keyword = req.query.keyword
-    ? {
-        $or: [
-          { name: { $regex: req.query.keyword, $options: "i" } },
-          { "variants.sku": { $regex: req.query.keyword, $options: "i" } },
-        ],
-      }
-    : {};
+  const keyword = buildKeywordFilter(req.query.keyword, true);
 
-  // 3. Filters (Brand, Category) - Admins usually don't need "inStock" filters
-  // because they need to see out-of-stock items, but we can leave the option open.
-  const brandFilter = req.query.brand
-    ? { brand: req.query.brand.toLowerCase() }
-    : {};
-  const categoryFilter = req.query.category
-    ? { category: req.query.category.toLowerCase() }
-    : {};
+  // 3. Filters (Brand, Category, Stock)
+  const brandFilter = buildBrandFilter(req.query.brand);
+  const categoryFilter = buildCategoryFilter(req.query.category);
+  // In stock = at least one variant has stock
   const inStockFilter =
     req.query.inStock === "true" ? { "variants.countInStock": { $gt: 0 } } : {};
+  // Out of stock = NO variant has stock (uses a different key, so both can't clash)
   const outOfStockFilter =
     req.query.outOfStock === "true"
-      ? { "variants.countInStock": { $lte: 0 } }
+      ? { variants: { $not: { $elemMatch: { countInStock: { $gt: 0 } } } } }
       : {};
 
   const query = {
@@ -214,26 +224,15 @@ export const getAdminProductById = async (req, res) => {
 // ---------------------------- Get All Products (Public Catalog) ----------------------------
 export const getProducts = async (req, res) => {
   // 1. Pagination Setup
-  const pageSize = Number(req.query.limit) || 12;
-  const page = Number(req.query.page) || 1;
+  const pageSize = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+  const page = Math.max(Math.floor(Number(req.query.page)) || 1, 1);
 
   // 2. Search by Keyword (Name)
-  const keyword = req.query.keyword
-    ? {
-        name: {
-          $regex: req.query.keyword,
-          $options: "i",
-        },
-      }
-    : {};
+  const keyword = buildKeywordFilter(req.query.keyword);
 
   // 3. Filters (Brand, Category, Featured, In-Stock)
-  const brandFilter = req.query.brand
-    ? { brand: req.query.brand.toLowerCase() }
-    : {};
-  const categoryFilter = req.query.category
-    ? { category: req.query.category.toLowerCase() }
-    : {};
+  const brandFilter = buildBrandFilter(req.query.brand);
+  const categoryFilter = buildCategoryFilter(req.query.category);
 
   const featuredFilter =
     req.query.featured === "true" ? { isFeatured: true } : {};
@@ -267,9 +266,9 @@ export const getProducts = async (req, res) => {
     .limit(pageSize)
     .skip(pageSize * (page - 1));
 
-  // 6. Send it back to the frontend
+  // 6. Send it back to the frontend (stock numbers stripped out)
   res.status(200).json({
-    products,
+    products: products.map(publicProduct),
     page,
     pages: Math.ceil(count / pageSize),
     totalProducts: count,
@@ -281,7 +280,7 @@ export const getProductById = async (req, res) => {
   const product = await Product.findById(req.params.id);
 
   if (product) {
-    res.status(200).json(product);
+    res.status(200).json(publicProduct(product));
   } else {
     res.status(404);
     throw new Error("Product not found");
@@ -293,28 +292,20 @@ export const updateProduct = async (req, res) => {
   const product = await Product.findById(req.params.id);
 
   if (product) {
-    // Check if a new image URL is being sent AND if it's different from the old one
-    if (req.body.image && req.body.image !== product.image) {
-      const oldPublicId = extractPublicId(product.image);
+    // Remember the old image so we can delete it AFTER the save succeeds
+    const oldImage = product.image;
+    const imageChanged = Boolean(req.body.image) && req.body.image !== oldImage;
 
-      if (oldPublicId) {
-        try {
-          await cloudinary.uploader.destroy(oldPublicId);
-          console.log(`Successfully deleted old image: ${oldPublicId}`);
-        } catch (error) {
-          console.error("Cloudinary deletion error (Update):", error);
-          // We log the error but don't throw it, so the DB still updates!
-        }
-      }
-    }
+    // Update standard fields (stored lowercase, same as createProduct, so
+    // duplicate detection and filters keep working after an edit)
+    if (req.body.name) product.name = normalizeText(req.body.name);
+    if (req.body.brand !== undefined) product.brand = normalizeText(req.body.brand);
+    if (req.body.category) product.category = normalizeText(req.body.category);
 
-    // Update standard fields
-    product.name = req.body.name || product.name;
-    product.brand = req.body.brand || product.brand;
-    product.category = req.body.category || product.category;
-    product.summary = req.body.summary || product.summary;
-    product.details = req.body.details || product.details;
-    product.image = req.body.image || product.image;
+    // Use !== undefined so these can be cleared to an empty string
+    if (req.body.summary !== undefined) product.summary = req.body.summary;
+    if (req.body.details !== undefined) product.details = req.body.details;
+    if (req.body.image) product.image = req.body.image;
 
     // Handle booleans safely
     product.isFeatured =
@@ -328,6 +319,13 @@ export const updateProduct = async (req, res) => {
     }
 
     const updatedProduct = await product.save();
+
+    // Only now that the new image is saved, delete the old one from Cloudinary
+    // (skipped if another product happens to use the same image)
+    if (imageChanged) {
+      await destroyImageIfUnused(oldImage, { excludeProductId: product._id });
+    }
+
     res.status(200).json({
       message: "Product updated successfully",
       product: updatedProduct,
@@ -343,20 +341,20 @@ export const deleteProduct = async (req, res) => {
   const product = await Product.findById(req.params.id);
 
   if (product) {
-    // Delete the image from Cloudinary first
-    const publicId = extractPublicId(product.image);
+    // Mark this product in every past order first, so order history keeps
+    // showing the item but flags it as no longer sold.
+    await Order.updateMany(
+      { "items.product": product._id },
+      { $set: { "items.$[it].productDeleted": true } },
+      { arrayFilters: [{ "it.product": product._id }] },
+    );
 
-    if (publicId) {
-      try {
-        await cloudinary.uploader.destroy(publicId);
-        console.log(`Successfully deleted image: ${publicId}`);
-      } catch (error) {
-        console.error("Cloudinary deletion error (Delete):", error);
-      }
-    }
-
-    // Then delete from the database
+    // Remove from the database, then the image. If the image delete fails, the
+    // daily sweep picks it up, and the product is never left pointing nowhere.
+    const image = product.image;
     await product.deleteOne();
+    await destroyImageIfUnused(image);
+
     res.status(200).json({ message: "Product removed successfully" });
   } else {
     res.status(404);
@@ -364,46 +362,47 @@ export const deleteProduct = async (req, res) => {
   }
 };
 
-// ---------------------------- Get Filters & Metadata (Public/Admin) ----------------------------
+// ---------------------------- Get Filters & Metadata (Public) ----------------------------
+// Public-safe: categories, brands and the number of products. No stock totals.
 export const getFiltersMetadata = async (req, res) => {
-  try {
-    // 1. Fetch unique categories and brands natively from MongoDB
-    const categories = await Product.distinct("category");
-    const brands = await Product.distinct("brand");
+  const [categories, brands, totalProducts] = await Promise.all([
+    Product.distinct("category"),
+    Product.distinct("brand", { brand: { $nin: ["", null] } }),
+    Product.countDocuments(),
+  ]);
 
-    // 2. Fetch total number of distinct product listings
-    const totalProducts = await Product.countDocuments();
+  res.status(200).json({
+    categories: { count: categories.length, names: categories },
+    brands: { count: brands.length, names: brands },
+    inventory: { totalProducts },
+  });
+};
 
-    // 3. Aggregate total physical units in stock across ALL variants
-    // This digs into every product, looks at every variant array, and sums the countInStock
-    const stockData = await Product.aggregate([
+// ---------------------------- Inventory Stats (Admin only) ----------------------------
+// Everything the public version has, plus the real stock figures.
+export const getInventoryStats = async (req, res) => {
+  const [categories, brands, totalProducts, stockData, lowStock, outOfStock] = await Promise.all([
+    Product.distinct("category"),
+    Product.distinct("brand", { brand: { $nin: ["", null] } }),
+    Product.countDocuments(),
+    Product.aggregate([
       { $unwind: "$variants" },
-      {
-        $group: {
-          _id: null,
-          totalPhysicalStock: { $sum: "$variants.countInStock" },
-        },
-      },
-    ]);
-    
-    const totalPhysicalStock = stockData.length > 0 ? stockData[0].totalPhysicalStock : 0;
+      { $group: { _id: null, totalPhysicalStock: { $sum: "$variants.countInStock" } } },
+    ]),
+    Product.countDocuments({
+      variants: { $elemMatch: { countInStock: { $gt: 0, $lte: LOW_STOCK_THRESHOLD } } },
+    }),
+    Product.countDocuments({ variants: { $not: { $elemMatch: { countInStock: { $gt: 0 } } } } }),
+  ]);
 
-    res.status(200).json({
-      categories: {
-        count: categories.length,
-        names: categories, // Array of strings e.g. ["protein", "creatine"]
-      },
-      brands: {
-        count: brands.length,
-        names: brands, // Array of strings e.g. ["muscletech", "optimum nutrition"]
-      },
-      inventory: {
-        totalProducts: totalProducts, // Number of distinct products (e.g. 50)
-        totalPhysicalStock: totalPhysicalStock, // Number of actual physical tubs/bottles in the warehouse (e.g. 3500)
-      },
-    });
-  } catch (error) {
-    res.status(500);
-    throw new Error("Failed to fetch metadata: " + error.message);
-  }
+  res.status(200).json({
+    categories: { count: categories.length, names: categories },
+    brands: { count: brands.length, names: brands },
+    inventory: {
+      totalProducts,
+      totalPhysicalStock: stockData[0]?.totalPhysicalStock || 0,
+      lowStockProducts: lowStock,
+      outOfStockProducts: outOfStock,
+    },
+  });
 };

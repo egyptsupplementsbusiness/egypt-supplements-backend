@@ -6,6 +6,7 @@ import {
   deleteProduct,
   updateProduct,
   getFiltersMetadata,
+  getInventoryStats,
   getAdminProducts, // <-- New Import
   getAdminProductById, // <-- New Import
 } from "../controllers/productController.js";
@@ -21,6 +22,7 @@ const router = express.Router();
 // ---------------------------- Admin Routes ----------------------------
 // Placed at the top so Express doesn't confuse "admin" for an ID parameter
 router.get("/admin/all", protect, admin, getAdminProducts);
+router.get("/admin/stats", protect, admin, getInventoryStats);
 router.get("/admin/:id", protect, admin, getAdminProductById);
 
 router.post("/add", protect, admin, validate(productSchema), createProduct);

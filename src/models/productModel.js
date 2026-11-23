@@ -47,7 +47,7 @@ const productSchema = new mongoose.Schema(
     },
     brand: {
       type: String,
-      required: [true, "Please add a brand"],
+      default: "", // optional
     },
     category: {
       type: String,
@@ -76,6 +76,17 @@ const productSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+// Indexes to keep listing, filtering and search fast as the catalogue grows.
+productSchema.index({ createdAt: -1 });
+productSchema.index({ category: 1 });
+productSchema.index({ brand: 1 });
+productSchema.index({ isFeatured: 1 });
+productSchema.index({ name: 1 });
+// Duplicate detection looks a product up by name + brand together
+productSchema.index({ name: 1, brand: 1 });
+// Speeds up the "lowest stock first" sort and low-stock lookups
+productSchema.index({ "variants.countInStock": 1 });
 
 const Product = mongoose.model("Product", productSchema);
 

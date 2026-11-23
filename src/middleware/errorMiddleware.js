@@ -1,4 +1,5 @@
 import { ZodError } from "zod";
+import multer from "multer";
 
 export const notFound = (req, res, next) => {
   const error = new Error(`Not Found - ${req.originalUrl}`);
@@ -11,7 +12,8 @@ export const errorHandler = (err, req, res, next) => {
     return next(err);
   }
 
-  let statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  let statusCode =
+    err.statusCode || (res.statusCode === 200 ? 500 : res.statusCode);
   let message = err.message;
 
   // Handle Zod Validation Errors
@@ -21,7 +23,6 @@ export const errorHandler = (err, req, res, next) => {
     const zodIssues = err.issues || err.errors;
 
     if (zodIssues && Array.isArray(zodIssues)) {
-      // Changed this line to just grab your custom message
       message = zodIssues.map((issue) => issue.message).join(", ");
     } else {
       message = "Validation failed: Check your input data";
@@ -34,8 +35,39 @@ export const errorHandler = (err, req, res, next) => {
     message = "Resource not found in the database";
   }
 
+  // Handle Mongoose schema validation errors (e.g. invalid email format)
+  else if (err.name === "ValidationError" && err.errors) {
+    statusCode = 400;
+    message = Object.values(err.errors)
+      .map((e) => e.message)
+      .join(", ");
+  }
+
+  // Handle duplicate keys (e.g. two accounts registering the same email at once)
+  else if (err.code === 11000) {
+    statusCode = 400;
+    const field = Object.keys(err.keyValue || {})[0] || "field";
+    message = `That ${field} is already in use`;
+  }
+
+  // Handle upload errors (file too large, wrong field name, etc.)
+  else if (err instanceof multer.MulterError) {
+    statusCode = 400;
+    message =
+      err.code === "LIMIT_FILE_SIZE"
+        ? "Image is too large. The maximum size is 4 MB."
+        : err.message;
+  }
+
+  // Malformed JSON body
+  else if (err.type === "entity.parse.failed") {
+    statusCode = 400;
+    message = "Invalid JSON in request body";
+  }
+
   res.status(statusCode).json({
     message: message,
-    stack: process.env.NODE_ENV === "production" ? null : err.stack,
+    // Only expose stack traces when explicitly running in development
+    stack: process.env.NODE_ENV === "development" ? err.stack : null,
   });
 };
