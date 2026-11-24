@@ -1,6 +1,7 @@
 import Category, { slugify } from "../models/categoryModel.js";
 import Product from "../models/productModel.js";
 import { destroyImageIfUnused } from "../utils/cloudinaryUtils.js";
+import { logEvent } from "../utils/logger.js";
 
 // Count products per category (by id), so the admin sees how many are in each one.
 const countsById = async () => {
@@ -13,7 +14,7 @@ const countsById = async () => {
 export const getPublicCategories = async (req, res) => {
   const categories = await Category.find({ isVisible: true })
     .sort({ order: 1, name: 1 })
-    .select("name slug image");
+    .select("name nameAr slug image description");
   res.status(200).json({ categories });
 };
 
@@ -29,7 +30,7 @@ export const getAdminCategories = async (req, res) => {
 };
 
 export const createCategory = async (req, res) => {
-  const { name, image = "", isVisible = true } = req.body;
+  const { name, nameAr = "", description, image = "", isVisible = true } = req.body;
   const slug = slugify(name);
   if (!slug) {
     res.status(400);
@@ -44,12 +45,15 @@ export const createCategory = async (req, res) => {
   const last = await Category.findOne().sort({ order: -1 }).select("order");
   const category = await Category.create({
     name: name.trim(),
+    nameAr,
+    description: description || { en: "", ar: "" },
     slug,
     image,
     isVisible,
     order: (last?.order || 0) + 1,
   });
 
+  await logEvent("admin", `Added category "${category.name}"`, { user: req.user });
   res.status(201).json({ message: "Category created", category });
 };
 
@@ -76,6 +80,8 @@ export const updateCategory = async (req, res) => {
     category.name = req.body.name.trim();
     category.slug = newSlug;
   }
+  if (req.body.nameAr !== undefined) category.nameAr = req.body.nameAr;
+  if (req.body.description !== undefined) category.description = req.body.description;
   if (req.body.image !== undefined) category.image = req.body.image;
   if (req.body.isVisible !== undefined) category.isVisible = req.body.isVisible;
   if (req.body.order !== undefined) category.order = req.body.order;
@@ -93,6 +99,12 @@ export const updateCategory = async (req, res) => {
     await destroyImageIfUnused(oldImage);
   }
 
+  const what = [
+    saved.slug !== oldSlug && `renamed to "${saved.name}"`,
+    req.body.image !== undefined && oldImage !== saved.image && "photo changed",
+    req.body.isVisible !== undefined && (saved.isVisible ? "shown on the site" : "hidden from the site"),
+  ].filter(Boolean);
+  if (what.length) await logEvent("admin", `Category "${saved.name}": ${what.join(", ")}`, { user: req.user });
   res.status(200).json({ message: "Category updated", category: saved });
 };
 
@@ -117,6 +129,9 @@ export const deleteCategory = async (req, res) => {
   await category.deleteOne();
   if (image) await destroyImageIfUnused(image);
 
+  await logEvent("admin", `Deleted category "${category.name}"${fallback ? ` (products moved to ${fallback.name})` : ""}`, {
+    user: req.user,
+  });
   res.status(200).json({ message: "Category deleted", movedTo: fallback?.slug || null });
 };
 
@@ -125,5 +140,6 @@ export const reorderCategories = async (req, res) => {
   const { ids } = req.body; // array of category ids, in the new order
   await Promise.all(ids.map((id, index) => Category.updateOne({ _id: id }, { $set: { order: index + 1 } })));
   const categories = await Category.find().sort({ order: 1, name: 1 });
+  await logEvent("admin", "Changed the order of the categories", { user: req.user });
   res.status(200).json({ message: "Order saved", categories });
 };

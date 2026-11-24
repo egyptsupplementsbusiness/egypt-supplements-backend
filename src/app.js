@@ -10,8 +10,11 @@ import orderRoutes from "./routes/orderRoutes.js";
 import cartRoutes from "./routes/cartRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
+import logRoutes from "./routes/logRoutes.js";
+import backupRoutes from "./routes/backupRoutes.js";
 import { isDbConnected } from "./config/db.js";
 import { IS_PRODUCTION } from "./config/env.js";
+import { translateResponses } from "./i18n/messages.js";
 import { cleanupOrphanImages } from "./utils/cloudinaryUtils.js";
 import { expireStalePendingOrders } from "./controllers/orderController.js";
 import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
@@ -36,6 +39,8 @@ app.use(
   cors(allowedOrigins.length > 0 ? { origin: allowedOrigins } : undefined),
 );
 app.use(express.json());
+// Answers in Arabic when the website asks for it (Accept-Language: ar)
+app.use(translateResponses);
 // Short one-line request logs on the live site, coloured ones locally
 app.use(morgan(IS_PRODUCTION ? "tiny" : "dev"));
 
@@ -95,6 +100,8 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/categories", categoryRoutes);
+app.use("/api/logs", logRoutes);
+app.use("/api/admin", backupRoutes);
 
 // ---------------------------- Global Error Handler ----------------------------
 app.use(notFound);

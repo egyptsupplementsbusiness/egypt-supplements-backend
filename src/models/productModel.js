@@ -91,6 +91,12 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Hidden from the shop (lists, search, product page, checkout) without
+    // deleting it. The admin can show it again any time.
+    isHidden: {
+      type: Boolean,
+      default: false,
+    },
     variants: [variantSchema],
   },
   {

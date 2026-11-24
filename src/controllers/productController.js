@@ -3,6 +3,7 @@ import Order from "../models/orderModel.js";
 import Category, { slugify } from "../models/categoryModel.js";
 import { LOW_STOCK_THRESHOLD } from "../config/constants.js";
 import { destroyImageIfUnused } from "../utils/cloudinaryUtils.js";
+import { logEvent } from "../utils/logger.js";
 
 // ---------------------------- Helpers: Safe Query Filters ----------------------------
 // Escape user input before putting it in a $regex (stops errors on "(" and slow regexes)
@@ -60,6 +61,7 @@ const publicProduct = (product) => {
     brand: p.brand,
     category: cat?.slug || p.category,
     categoryName: cat?.name || "",
+    categoryNameAr: cat?.nameAr || "",
     categoryId: cat?._id || p.categoryId || null,
     summary: p.summary,
     details: p.details,
@@ -151,7 +153,9 @@ const findDuplicate = ({ name, brand, categoryId, excludeId }) =>
 // Products in hidden categories are left out of the shop's lists and search.
 const hiddenCategoryIds = () => Category.find({ isVisible: false }).distinct("_id");
 
-const withoutHiddenCategories = async (query) => {
+const withoutHiddenCategories = async (rawQuery) => {
+  // Products the admin hid one by one
+  const query = { ...rawQuery, isHidden: { $ne: true } };
   const hidden = await hiddenCategoryIds();
   if (hidden.length === 0) return query;
   const hiddenSet = new Set(hidden.map(String));
@@ -171,6 +175,7 @@ export const createProduct = async (req, res) => {
     details,
     image,
     isFeatured,
+    isHidden,
     variants,
   } = req.body;
 
@@ -220,10 +225,12 @@ export const createProduct = async (req, res) => {
     details,
     image,
     isFeatured,
+    isHidden: Boolean(isHidden),
     variants,
   });
 
   const createdProduct = await product.save();
+  await logEvent("admin", `Added product "${createdProduct.name}"`, { user: req.user });
 
   res.status(201).json({
     message: "New product created successfully!",
@@ -252,12 +259,15 @@ export const getAdminProducts = async (req, res) => {
       ? { variants: { $not: { $elemMatch: { countInStock: { $gt: 0 } } } } }
       : {};
 
+  const hiddenFilter = req.query.hidden === "true" ? { isHidden: true } : {};
+
   const query = {
     ...keyword,
     ...brandFilter,
     ...categoryFilter,
     ...inStockFilter,
     ...outOfStockFilter,
+    ...hiddenFilter,
   };
 
   // 4. Dynamic Sorting Setup
@@ -349,7 +359,7 @@ export const getProducts = async (req, res) => {
     .sort(sortObject)
     .limit(pageSize)
     .skip(pageSize * (page - 1))
-    .populate("categoryId", "name slug");
+    .populate("categoryId", "name nameAr slug");
 
   // 6. Send it back to the frontend (stock numbers stripped out)
   res.status(200).json({
@@ -362,9 +372,9 @@ export const getProducts = async (req, res) => {
 
 // ---------------------------- Get Single Product (Public) ----------------------------
 export const getProductById = async (req, res) => {
-  const product = await Product.findById(req.params.id).populate("categoryId", "name slug");
+  const product = await Product.findById(req.params.id).populate("categoryId", "name nameAr slug");
 
-  if (product) {
+  if (product && !product.isHidden) {
     res.status(200).json(publicProduct(product));
   } else {
     res.status(404);
@@ -387,6 +397,7 @@ const FIELD_LABELS = {
   details: "full description",
   image: "photo",
   isFeatured: "home page setting",
+  isHidden: "shown/hidden in the shop",
 };
 const VARIANT_FIELD_LABELS = {
   flavor: "flavor",
@@ -430,6 +441,28 @@ const findConflicts = (product, seen = {}) => {
   return conflicts;
 };
 
+// A short plain-words list of what an edit changed, for the activity log
+const describeChanges = (product, body) => {
+  const parts = [];
+  for (const field of Object.keys(FIELD_LABELS)) {
+    if (body[field] !== undefined && product.isModified(field)) parts.push(FIELD_LABELS[field]);
+  }
+  for (const change of body.variants || []) {
+    const variant = change._id ? product.variants.id(change._id) : null;
+    if (!change._id) {
+      parts.push(`new option ${optionLabel(change)}`);
+      continue;
+    }
+    if (!variant) continue;
+    for (const field of VARIANT_FIELDS) {
+      if (change[field] === undefined) continue;
+      parts.push(`${VARIANT_FIELD_LABELS[field]} of ${optionLabel(variant)} to ${change[field] ?? "none"}`);
+    }
+  }
+  if (body.removeVariantIds?.length) parts.push(`removed ${body.removeVariantIds.length} option(s)`);
+  return parts.join(", ");
+};
+
 export const updateProduct = async (req, res) => {
   const product = await Product.findById(req.params.id);
   if (!product) {
@@ -468,6 +501,7 @@ export const updateProduct = async (req, res) => {
   if (body.details !== undefined) product.details = body.details;
   if (body.image) product.image = body.image;
   if (body.isFeatured !== undefined) product.isFeatured = body.isFeatured;
+  if (body.isHidden !== undefined) product.isHidden = body.isHidden;
 
   // 3. Options: remove, change only the sent fields, add new ones
   for (const id of body.removeVariantIds || []) {
@@ -509,7 +543,9 @@ export const updateProduct = async (req, res) => {
     }
   }
 
+  const changes = describeChanges(product, body);
   const updatedProduct = await product.save();
+  await logEvent("admin", `Edited product "${updatedProduct.name}"${changes ? `: ${changes}` : ""}`, { user: req.user });
 
   // Only now that the new image is saved, delete the old one from Cloudinary
   // (skipped if another product happens to use the same image)
@@ -541,6 +577,7 @@ export const deleteProduct = async (req, res) => {
     const image = product.image;
     await product.deleteOne();
     await destroyImageIfUnused(image);
+    await logEvent("admin", `Deleted product "${product.name}"`, { user: req.user });
 
     res.status(200).json({ message: "Product removed successfully" });
   } else {
@@ -564,14 +601,14 @@ export const getFiltersMetadata = async (req, res) => {
   // ones left out). "items" carries the exact link slug for each.
   const categories = await Category.find({ _id: { $in: categoryIds }, isVisible: true })
     .sort({ order: 1, name: 1 })
-    .select("name slug")
+    .select("name nameAr slug")
     .lean();
 
   res.status(200).json({
     categories: {
       count: categories.length,
       names: categories.map((c) => c.name),
-      items: categories.map((c) => ({ name: c.name, slug: c.slug })),
+      items: categories.map((c) => ({ name: c.name, nameAr: c.nameAr || "", slug: c.slug })),
     },
     brands: { count: brands.length, names: brands },
     inventory: { totalProducts },

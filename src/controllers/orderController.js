@@ -3,6 +3,8 @@ import Product from "../models/productModel.js";
 import Cart from "../models/cartModel.js";
 import { getSettings, shippingFor, publicSettings } from "../models/settingsModel.js";
 import { MAX_PENDING_ORDERS_PER_ACCOUNT, PENDING_ORDER_EXPIRY_DAYS } from "../config/constants.js";
+import { SHOP_TIMEZONE, cairoStartOf, cairoToday } from "../utils/cairoTime.js";
+import { logEvent } from "../utils/logger.js";
 
 // ---------------------------- Helpers ----------------------------
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -48,6 +50,15 @@ const returnStock = (items) =>
       ),
     ),
   );
+
+// Status names as the admin sees them
+const STATUS_NAMES = {
+  pending: "Placed",
+  processing: "Preparing",
+  shipped: "Out for delivery",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+};
 
 const pushStatus = (order, status, by) => {
   order.status = status;
@@ -96,7 +107,7 @@ export const createOrder = async (req, res) => {
   for (const line of lines) {
     const product = byId.get(line.productId);
     const variant = product?.variants.id(line.variantId);
-    if (!product || !variant) {
+    if (!product || !variant || product.isHidden) {
       problems.push("One of the items in your cart is no longer available. Please remove it and try again.");
       continue;
     }
@@ -164,6 +175,7 @@ export const createOrder = async (req, res) => {
     }
     // The order is in: empty the saved cart (failure here doesn't matter)
     await Cart.updateOne({ user: req.user._id }, { $set: { items: [] } }).catch(() => {});
+    await logEvent("customer", `Placed order #${order.orderNumber} (${order.total} EGP)`, { user: req.user });
     res.status(201).json({ message: "Order placed", order });
   } catch (error) {
     await returnStock(taken);
@@ -213,6 +225,7 @@ export const cancelMyOrder = async (req, res) => {
   }
 
   await returnStock(order.items);
+  await logEvent("customer", `Cancelled order #${order.orderNumber}`, { user: req.user });
   res.status(200).json({ message: "Order cancelled", order });
 };
 
@@ -238,6 +251,11 @@ export const expireStalePendingOrders = async () => {
     if (!order) continue;
     await returnStock(order.items);
     cancelled += 1;
+  }
+  if (cancelled > 0) {
+    await logEvent("admin", `Automatically cancelled ${cancelled} order(s) not confirmed within ${PENDING_ORDER_EXPIRY_DAYS} days`, {
+      user: { name: "The shop (automatic)" },
+    });
   }
   if (cancelled > 0) console.log(`⏰ Auto-cancelled ${cancelled} order(s) not confirmed within ${PENDING_ORDER_EXPIRY_DAYS} days`);
   return { checked: stale.length, cancelled };
@@ -354,14 +372,18 @@ export const updateOrderStatus = async (req, res) => {
 
   if (status === "cancelled") await returnStock(updated.items);
 
+  await logEvent("admin", `Changed order #${updated.orderNumber} from ${STATUS_NAMES[current]} to ${STATUS_NAMES[status]}`, {
+    user: req.user,
+  });
   res.status(200).json({ message: "Order updated", order: updated });
 };
 
 // ---------------------------- Numbers for the admin home ----------------------------
 export const getOrderSummary = async (req, res) => {
   await expireStaleOrdersNowAndThen();
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  // "This month" in Cairo time, not the server's
+  const today = cairoToday();
+  const monthStart = cairoStartOf(today.year, today.month, 1);
 
   const [byStatus, thisMonth] = await Promise.all([
     Order.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
@@ -391,18 +413,16 @@ export const getOrderSummary = async (req, res) => {
 // every placed order except cancelled ones.
 export const getSalesReport = async (req, res) => {
   const range = req.query.range === "year" ? "year" : "month";
-  const now = new Date();
+  // Months and years are counted in Cairo time, so an order placed at
+  // 1 AM on the 1st in Cairo lands in the right month.
+  const today = cairoToday();
 
   // Window: last 12 months, or last 5 years
   const start =
-    range === "year"
-      ? new Date(now.getFullYear() - 4, 0, 1)
-      : new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    range === "year" ? cairoStartOf(today.year - 4, 1, 1) : cairoStartOf(today.year, today.month - 11, 1);
 
-  const groupId =
-    range === "year"
-      ? { y: { $year: "$createdAt" } }
-      : { y: { $year: "$createdAt" }, m: { $month: "$createdAt" } };
+  const inCairo = (op) => ({ [op]: { date: "$createdAt", timezone: SHOP_TIMEZONE } });
+  const groupId = range === "year" ? { y: inCairo("$year") } : { y: inCairo("$year"), m: inCairo("$month") };
 
   const rows = await Order.aggregate([
     { $match: { createdAt: { $gte: start }, status: { $ne: "cancelled" } } },
@@ -426,24 +446,26 @@ export const getSalesReport = async (req, res) => {
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const points = [];
   if (range === "year") {
-    for (let y = now.getFullYear() - 4; y <= now.getFullYear(); y += 1) {
+    for (let y = today.year - 4; y <= today.year; y += 1) {
       const r = byKey.get(`${y}`);
-      points.push({ label: `${y}`, orders: r?.orders || 0, placedValue: r?.placedValue || 0, sales: r?.sales || 0, deliveredOrders: r?.deliveredOrders || 0 });
+      points.push({ label: `${y}`, year: y, orders: r?.orders || 0, placedValue: r?.placedValue || 0, sales: r?.sales || 0, deliveredOrders: r?.deliveredOrders || 0 });
     }
   } else {
-    const cursor = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    const cursor = new Date(Date.UTC(today.year, today.month - 12, 1));
     for (let i = 0; i < 12; i += 1) {
-      const y = cursor.getFullYear();
-      const m = cursor.getMonth() + 1;
+      const y = cursor.getUTCFullYear();
+      const m = cursor.getUTCMonth() + 1;
       const r = byKey.get(`${y}-${m}`);
       points.push({
-        label: `${MONTHS[cursor.getMonth()]} ${String(y).slice(2)}`,
+        label: `${MONTHS[m - 1]} ${String(y).slice(2)}`,
+        year: y,
+        month: m,
         orders: r?.orders || 0,
         placedValue: r?.placedValue || 0,
         sales: r?.sales || 0,
         deliveredOrders: r?.deliveredOrders || 0,
       });
-      cursor.setMonth(cursor.getMonth() + 1);
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
     }
   }
 

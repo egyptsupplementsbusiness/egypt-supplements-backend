@@ -18,27 +18,35 @@ const savedAddressSchema = z
   })
   .optional();
 
+// New passwords: at least 8 characters. (Older accounts with shorter
+// passwords can still sign in; they're asked for 8+ only when they change it.)
+const newPassword = (label = "Password") =>
+  z.string().min(8, `${label} must be at least 8 characters`).max(100, `${label} is too long`);
+
+const personName = z.string().trim().min(2, "Name must be at least 2 characters").max(80, "Name is too long (80 letters at most)");
+const emailField = z.string().trim().max(120, "Email is too long").email("Please provide a valid email address");
+
 // NOTE: validate() replaces req.body with the parsed result, so every field a
 // route needs must be listed in its schema (unknown fields are stripped).
 
 // 1. Register Schema
 export const registerSchema = z.object({
-  name: z.string().trim().min(2, "Name must be at least 2 characters"),
-  email: z.string().trim().email("Please provide a valid email address"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
+  name: personName,
+  email: emailField,
+  password: newPassword(),
   phone: egyptianMobile,
 });
 
 // 2. Login Schema
 export const loginSchema = z.object({
-  email: z.string().trim().email("Please provide a valid email address"),
+  email: emailField,
   // We don't check for min length here; we just need to ensure they sent *something*
-  password: z.string().min(1, "Password is required"),
+  password: z.string().min(1, "Password is required").max(100),
 });
 
 // 3. Update Profile Schema (User self-service)
 export const updateProfileSchema = z.object({
-  name: z.string().trim().min(2, "Name must be at least 2 characters").optional(),
+  name: personName.optional(),
   phone: egyptianMobile.optional(),
   address: z.string().trim().max(300, "Address is too long").optional(),
   savedAddress: savedAddressSchema,
@@ -50,13 +58,13 @@ export const updateProfileSchema = z.object({
 
 // 4. Update Password Schema
 export const updatePasswordSchema = z.object({
-  oldPassword: z.string().min(1, "Old password is required"),
-  newPassword: z.string().min(6, "New password must be at least 6 characters"),
+  oldPassword: z.string().min(1, "Old password is required").max(100),
+  newPassword: newPassword("New password"),
 });
 
 // 4b. Change Email (needs the current password)
 export const updateEmailSchema = z.object({
-  email: z.string().trim().email("Please provide a valid email address"),
+  email: emailField,
   password: z.string().min(1, "Please enter your password to confirm"),
 });
 
@@ -67,19 +75,19 @@ export const confirmPasswordSchema = z.object({
 
 // 4d. Forgot password (public)
 export const forgotPasswordSchema = z.object({
-  email: z.string().trim().email("Please provide a valid email address"),
+  email: emailField,
 });
 
 // 4e. Admin sets a customer's password
 export const adminSetPasswordSchema = z.object({
-  newPassword: z.string().min(6, "New password must be at least 6 characters"),
+  newPassword: newPassword("New password"),
 });
 
 // 5. Admin Update User Schema
 export const adminUpdateUserSchema = z.object({
-  name: z.string().trim().min(2, "Name must be at least 2 characters").optional(),
-  email: z.string().trim().email("Please provide a valid email address").optional(),
-  phone: z.string().trim().min(8, "Please provide a valid phone number").optional(),
+  name: personName.optional(),
+  email: emailField.optional(),
+  phone: egyptianMobile.optional(),
   role: z
     .enum(["user", "admin"], {
       message: "Role must be either 'user' or 'admin'",

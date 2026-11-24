@@ -29,7 +29,22 @@ export const updateSettingsSchema = z.object({
       address: z.string().trim().max(200).optional(),
       city: z.string().trim().max(60).optional(),
       hours: z.string().trim().max(80).optional(),
+      cityAr: z.string().trim().max(60).optional(),
+      addressAr: z.string().trim().max(200).optional(),
+      hoursAr: z.string().trim().max(80).optional(),
     })
+    .optional(),
+  // Website texts: { "home.hero.title1": { en, ar } }. Keys are the site's own
+  // text names; empty values mean "use the built-in text".
+  texts: z
+    .record(
+      z.string().regex(/^[a-z][a-zA-Z0-9.]{1,60}$/, "Unknown text name"),
+      z.object({
+        en: z.string().trim().max(600, "That text is too long (600 letters at most)").optional().default(""),
+        ar: z.string().trim().max(600, "That text is too long (600 letters at most)").optional().default(""),
+      }),
+    )
+    .refine((v) => Object.keys(v).length <= 150, "Too many texts")
     .optional(),
   socials: z
     .array(

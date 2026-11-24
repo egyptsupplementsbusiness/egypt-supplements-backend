@@ -1,6 +1,7 @@
 import { ZodError } from "zod";
 import multer from "multer";
 import { IS_PRODUCTION } from "../config/env.js";
+import { logEvent } from "../utils/logger.js";
 
 export const notFound = (req, res, next) => {
   const error = new Error(`Not Found - ${req.originalUrl}`);
@@ -8,7 +9,7 @@ export const notFound = (req, res, next) => {
   next(error);
 };
 
-export const errorHandler = (err, req, res, next) => {
+export const errorHandler = async (err, req, res, next) => {
   if (res.headersSent) {
     return next(err);
   }
@@ -70,6 +71,11 @@ export const errorHandler = (err, req, res, next) => {
   // the technical details in the server log and show the visitor a plain message.
   if (statusCode === 500) {
     console.error(`💥 ${req.method} ${req.originalUrl}:`, err);
+    // Shows up in the admin Activity log under "Errors"
+    await logEvent("error", `${req.method} ${req.originalUrl.split("?")[0]}: ${err.message}`, {
+      user: req.user,
+      details: { stack: String(err.stack || "").slice(0, 1500) },
+    });
     if (IS_PRODUCTION) message = "Something went wrong on our side. Please try again in a moment.";
   }
 

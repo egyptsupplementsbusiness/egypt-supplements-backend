@@ -9,10 +9,10 @@ const variantFields = {
   // Keep each option's id when editing, so carts and orders that point
   // at a specific flavor/size keep working after the product is saved
   _id: objectId.optional(),
-  flavor: z.string().optional(),
-  size: z.string().optional(),
-  servings: z.string().optional(),
-  price: z.number().positive("Price must be greater than 0"),
+  flavor: z.string().trim().max(60, "Flavor is too long (60 letters at most)").optional(),
+  size: z.string().trim().max(60, "Size is too long (60 letters at most)").optional(),
+  servings: z.string().trim().max(20, "Servings is too long").optional(),
+  price: z.number().positive("Price must be greater than 0").max(1000000, "That price is too high"),
   discountedPrice: z
     .number()
     .nonnegative("Discounted price cannot be negative")
@@ -21,22 +21,27 @@ const variantFields = {
   countInStock: z
     .number()
     .int("Stock must be a whole number")
-    .nonnegative("Stock cannot be negative"),
-  sku: z.string().optional(),
+    .nonnegative("Stock cannot be negative")
+    .max(100000, "That stock number is too high"),
+  sku: z.string().trim().max(60, "Product code is too long (60 letters at most)").optional(),
 };
 
 export const productSchema = z.object({
-  name: z.string().trim().min(3, "Name must be at least 3 characters"),
-  brand: z.string().trim().optional().default(""),
+  name: z.string().trim().min(3, "Name must be at least 3 characters").max(120, "Name is too long (120 letters at most)"),
+  brand: z.string().trim().max(60, "Brand is too long (60 letters at most)").optional().default(""),
   // Pick the category by its id (the admin form does). A category name is
   // still accepted from older clients, but it must be an existing category.
   categoryId: objectId.optional(),
   category: z.string().trim().optional(),
   summary: z.string().max(200, "Summary is too long").optional(),
-  details: z.string().optional(),
-  image: z.string().url("Invalid image URL"),
+  details: z.string().max(5000, "Full description is too long (5000 letters at most)").optional(),
+  image: z.string().url("Invalid image URL").max(400),
   isFeatured: z.boolean().optional(),
-  variants: z.array(z.object(variantFields)).min(1, "At least one variant is required"),
+  isHidden: z.boolean().optional(),
+  variants: z
+    .array(z.object(variantFields))
+    .min(1, "At least one variant is required")
+    .max(40, "Too many options (40 at most)"),
 });
 
 // Editing sends only what the admin changed:
@@ -49,13 +54,14 @@ export const productSchema = z.object({
 // - force: save anyway after that warning
 export const updateProductSchema = z.object({
   name: productSchema.shape.name.optional(),
-  brand: z.string().trim().optional(),
+  brand: z.string().trim().max(60, "Brand is too long (60 letters at most)").optional(),
   categoryId: objectId.optional(),
   category: z.string().trim().optional(),
   summary: productSchema.shape.summary,
   details: productSchema.shape.details,
   image: productSchema.shape.image.optional(),
   isFeatured: z.boolean().optional(),
+  isHidden: z.boolean().optional(),
   variants: z
     .array(
       z.object({

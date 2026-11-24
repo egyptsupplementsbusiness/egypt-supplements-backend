@@ -2,6 +2,7 @@ import User from "../models/userModel.js";
 import PasswordReset from "../models/passwordResetModel.js";
 import generateToken from "../utils/generateToken.js";
 import { LIMITS, assertNotLimited, clear, clientIp, hit } from "../utils/rateLimit.js";
+import { logEvent } from "../utils/logger.js";
 
 // ---------------------------- User Register ----------------------------
 export const registerUser = async (req, res) => {
@@ -22,6 +23,7 @@ export const registerUser = async (req, res) => {
   const user = await User.create({ name, email, password, phone });
 
   if (user) {
+    await logEvent("customer", "Created an account", { user });
     res.status(201).json({
       message: "User registered successfully!",
       user: {
@@ -53,14 +55,21 @@ export const loginUser = async (req, res) => {
   const ip = clientIp(req);
   const accountKey = `login:account:${ip}:${email}`;
   const ipKey = `login:ip:${ip}`;
-  await assertNotLimited(
-    res,
-    [
-      { key: accountKey, max: LIMITS.loginPerAccount.max },
-      { key: ipKey, max: LIMITS.loginPerIp.max },
-    ],
-    "Too many wrong sign-in attempts.",
-  );
+  try {
+    await assertNotLimited(
+      res,
+      [
+        { key: accountKey, max: LIMITS.loginPerAccount.max },
+        { key: ipKey, max: LIMITS.loginPerIp.max },
+      ],
+      "Too many wrong sign-in attempts.",
+    );
+  } catch (error) {
+    await logEvent("security", `Sign-in blocked for ${email} after too many wrong passwords`, {
+      details: { address: ip },
+    });
+    throw error;
+  }
 
   const user = await User.findOne({ email }).select("+password");
 
@@ -77,6 +86,8 @@ export const loginUser = async (req, res) => {
           : "This account has been deactivated. Please contact support.",
       );
     }
+
+    if (user.role === "admin") await logEvent("security", "Admin signed in", { user, details: { address: ip } });
 
     // If active, proceed with login
     res.status(200).json({
@@ -244,6 +255,7 @@ export const deactivateMyAccount = async (req, res) => {
   user.deactivatedBy = "self";
   await user.save();
 
+  await logEvent("customer", "Closed their account", { user });
   res.status(200).json({ message: "Your account has been closed." });
 };
 
@@ -306,6 +318,7 @@ export const resolveResetRequest = async (req, res) => {
     res.status(404);
     throw new Error("Request not found");
   }
+  await logEvent("admin", `Marked the password-help request from ${request.email} as done`, { user: req.user });
   res.status(200).json({ message: "Marked as done", request });
 };
 
@@ -328,6 +341,7 @@ export const adminSetUserPassword = async (req, res) => {
     { $set: { status: "resolved", resolvedAt: new Date(), resolvedBy: req.user._id } },
   );
 
+  await logEvent("admin", `Set a new password for ${user.name} (${user.email})`, { user: req.user });
   res.status(200).json({ message: "New password set for this customer." });
 };
 
@@ -385,6 +399,7 @@ export const deleteUser = async (req, res) => {
     // 🔥 Change from hard delete to soft delete
     user.isActive = false;
     await user.save();
+    await logEvent("admin", `Suspended the account of ${user.name} (${user.email})`, { user: req.user });
 
     res.status(200).json({ message: "User suspended successfully" });
   } else {
@@ -446,7 +461,16 @@ export const updateUser = async (req, res) => {
       user.isActive = req.body.isActive;
     }
 
+    const changed = ["name", "email", "phone", "role", "isActive"].filter((f) => user.isModified(f));
     const updatedUser = await user.save();
+    if (changed.length) {
+      const words = changed.map((f) =>
+        f === "role" ? `made ${updatedUser.role === "admin" ? "an admin" : "a customer"}` : f === "isActive" ? (updatedUser.isActive ? "re-activated" : "suspended") : f,
+      );
+      await logEvent("admin", `Changed the account of ${updatedUser.name} (${updatedUser.email}): ${words.join(", ")}`, {
+        user: req.user,
+      });
+    }
 
     res.status(200).json({
       message: "User updated successfully",

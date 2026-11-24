@@ -6,6 +6,12 @@ import mongoose from "mongoose";
 const categorySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true }, // shown as typed, e.g. "Mass Gain"
+    nameAr: { type: String, default: "", trim: true }, // Arabic name, e.g. "زيادة الوزن" (empty = use name)
+    // One line shown on the home page tile, in both languages (empty = built-in line)
+    description: {
+      en: { type: String, default: "", trim: true },
+      ar: { type: String, default: "", trim: true },
+    },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true }, // e.g. "mass-gain"
     image: { type: String, default: "" }, // optional photo; a built-in design is used when empty
     order: { type: Number, default: 0 }, // smaller shows first

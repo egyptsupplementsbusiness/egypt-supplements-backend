@@ -35,7 +35,16 @@ const settingsSchema = new mongoose.Schema(
       address: { type: String, default: "" },
       city: { type: String, default: "Alexandria" },
       hours: { type: String, default: "Mon–Sat, 9 AM – 6 PM" },
+      // Arabic versions, shown when the site is in Arabic (empty = use the English one)
+      cityAr: { type: String, default: "" },
+      addressAr: { type: String, default: "" },
+      hoursAr: { type: String, default: "" },
     },
+
+    // --- Website texts the admin rewrote (home page, footer...) ---
+    // { "home.hero.title1": { en: "...", ar: "..." }, ... }
+    // Anything not listed here uses the website's built-in text.
+    texts: { type: mongoose.Schema.Types.Mixed, default: {} },
 
     // --- Footer social links ---
     socials: { type: [socialLinkSchema], default: [] },
@@ -101,7 +110,11 @@ export const publicSettings = (settings) => ({
     address: settings.contact.address,
     city: settings.contact.city,
     hours: settings.contact.hours,
+    cityAr: settings.contact.cityAr || "",
+    addressAr: settings.contact.addressAr || "",
+    hoursAr: settings.contact.hoursAr || "",
   },
+  texts: settings.texts || {},
   socials: (settings.socials || []).filter((s) => s.visible && s.url).map((s) => ({ platform: s.platform, url: s.url })),
   hero: {
     images: settings.hero?.images || [],
