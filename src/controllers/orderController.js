@@ -7,9 +7,11 @@ import { MAX_PENDING_ORDERS_PER_ACCOUNT, PENDING_ORDER_EXPIRY_DAYS } from "../co
 // ---------------------------- Helpers ----------------------------
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// The price a customer pays for one option. The shop sells at the listed price
-// (no sale prices for now).
-const effectivePrice = (variant) => Number(variant.price);
+// The price a customer pays for one option: the sale price when it has one.
+const effectivePrice = (variant) => {
+  const sale = Number(variant.discountedPrice);
+  return sale > 0 && sale < Number(variant.price) ? sale : Number(variant.price);
+};
 
 const variantLabel = (variant) =>
   [variant.flavor, variant.size, variant.servings ? `${variant.servings} servings` : ""]
@@ -197,12 +199,16 @@ export const cancelMyOrder = async (req, res) => {
   );
 
   if (!order) {
-    const exists = await Order.exists({ _id: req.params.id, user: req.user._id });
-    res.status(exists ? 400 : 404);
+    const existing = await Order.findOne({ _id: req.params.id, user: req.user._id }).select("status").lean();
+    res.status(existing ? 400 : 404);
     throw new Error(
-      exists
-        ? "This order has already been confirmed, so it can't be cancelled here. Please contact us on WhatsApp."
-        : "Order not found",
+      !existing
+        ? "Order not found"
+        : existing.status === "cancelled"
+          ? "This order is already cancelled."
+          : existing.status === "delivered"
+            ? "This order has already been delivered, so it can't be cancelled. Please contact us on WhatsApp."
+            : "This order has already been confirmed, so it can't be cancelled here. Please contact us on WhatsApp.",
     );
   }
 
@@ -404,6 +410,8 @@ export const getSalesReport = async (req, res) => {
       $group: {
         _id: groupId,
         orders: { $sum: 1 },
+        // Value of every placed (not cancelled) order, for the average order
+        placedValue: { $sum: "$total" },
         sales: { $sum: { $cond: [{ $eq: ["$status", "delivered"] }, "$total", 0] } },
         deliveredOrders: { $sum: { $cond: [{ $eq: ["$status", "delivered"] }, 1, 0] } },
       },
@@ -420,7 +428,7 @@ export const getSalesReport = async (req, res) => {
   if (range === "year") {
     for (let y = now.getFullYear() - 4; y <= now.getFullYear(); y += 1) {
       const r = byKey.get(`${y}`);
-      points.push({ label: `${y}`, orders: r?.orders || 0, sales: r?.sales || 0, deliveredOrders: r?.deliveredOrders || 0 });
+      points.push({ label: `${y}`, orders: r?.orders || 0, placedValue: r?.placedValue || 0, sales: r?.sales || 0, deliveredOrders: r?.deliveredOrders || 0 });
     }
   } else {
     const cursor = new Date(now.getFullYear(), now.getMonth() - 11, 1);
@@ -431,6 +439,7 @@ export const getSalesReport = async (req, res) => {
       points.push({
         label: `${MONTHS[cursor.getMonth()]} ${String(y).slice(2)}`,
         orders: r?.orders || 0,
+        placedValue: r?.placedValue || 0,
         sales: r?.sales || 0,
         deliveredOrders: r?.deliveredOrders || 0,
       });
@@ -439,10 +448,16 @@ export const getSalesReport = async (req, res) => {
   }
 
   const totals = points.reduce(
-    (acc, p) => ({ orders: acc.orders + p.orders, sales: acc.sales + p.sales, deliveredOrders: acc.deliveredOrders + p.deliveredOrders }),
-    { orders: 0, sales: 0, deliveredOrders: 0 },
+    (acc, p) => ({
+      orders: acc.orders + p.orders,
+      placedValue: acc.placedValue + p.placedValue,
+      sales: acc.sales + p.sales,
+      deliveredOrders: acc.deliveredOrders + p.deliveredOrders,
+    }),
+    { orders: 0, placedValue: 0, sales: 0, deliveredOrders: 0 },
   );
-  totals.avgOrderValue = totals.deliveredOrders ? Math.round(totals.sales / totals.deliveredOrders) : 0;
+  // Average over every order placed (not cancelled), matching "Orders placed"
+  totals.avgOrderValue = totals.orders ? Math.round(totals.placedValue / totals.orders) : 0;
 
   res.status(200).json({ range, points, totals });
 };

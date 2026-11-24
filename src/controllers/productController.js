@@ -30,6 +30,9 @@ const buildKeywordFilter = (rawKeyword, includeSku = false) => {
 // ---------------------------- Public view of a product ----------------------------
 // The public never sees exact stock numbers. Each option reports only whether
 // it's in stock, plus "X left" when it's running low (to nudge a sale).
+const onSale = (variant) =>
+  typeof variant.discountedPrice === "number" && variant.discountedPrice > 0 && variant.discountedPrice < variant.price;
+
 const publicVariant = (variant) => {
   const stock = variant.countInStock || 0;
   const low = stock > 0 && stock <= LOW_STOCK_THRESHOLD;
@@ -39,6 +42,8 @@ const publicVariant = (variant) => {
     size: variant.size,
     servings: variant.servings,
     price: variant.price,
+    // Sale price, only when it's a real discount
+    discountedPrice: onSale(variant) ? variant.discountedPrice : null,
     inStock: stock > 0,
     lowStock: low,
     ...(low ? { remaining: stock } : {}),
@@ -71,11 +76,12 @@ const buildBrandFilter = (rawBrand) => {
   if (typeof rawBrand !== "string") return {};
   const brands = rawBrand
     .split(",")
-    .map((b) => b.trim().toLowerCase())
+    .map((b) => b.trim())
     .filter(Boolean);
 
   if (brands.length === 0) return {};
-  return brands.length === 1 ? { brand: brands[0] } : { brand: { $in: brands } };
+  // Names keep their capitals now, so match "MuscleTech" and "muscletech" alike
+  return { brand: { $in: brands.map((b) => new RegExp(`^${escapeRegex(b)}$`, "i")) } };
 };
 
 // Category filter. Accepts the URL slug ("pre-workout") or the words
@@ -120,7 +126,41 @@ const resolveCategory = async (body, res) => {
   return null;
 };
 
-const normalizeText = (value = "") => String(value ?? "").trim().toLowerCase();
+// Product names and brands are saved as typed (capitals kept), just tidied.
+const cleanText = (value = "") => String(value ?? "").trim().replace(/\s+/g, " ");
+
+const exactInsensitive = (text) => new RegExp(`^${escapeRegex(text)}$`, "i");
+
+// Use the spelling of a brand the shop already has ("MuscleTech"), so the
+// same brand isn't listed twice with different capitals.
+const matchExistingBrand = async (brand) => {
+  if (!brand) return "";
+  const existing = await Product.findOne({ brand: exactInsensitive(brand) }).select("brand").lean();
+  return existing?.brand || brand;
+};
+
+// Another product with the same name, brand and category (capitals ignored)
+const findDuplicate = ({ name, brand, categoryId, excludeId }) =>
+  Product.findOne({
+    name: exactInsensitive(name),
+    brand: brand ? exactInsensitive(brand) : { $in: ["", null] },
+    categoryId,
+    ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+  });
+
+// Products in hidden categories are left out of the shop's lists and search.
+const hiddenCategoryIds = () => Category.find({ isVisible: false }).distinct("_id");
+
+const withoutHiddenCategories = async (query) => {
+  const hidden = await hiddenCategoryIds();
+  if (hidden.length === 0) return query;
+  const hiddenSet = new Set(hidden.map(String));
+  if (query.categoryId) {
+    // Asked for one category: nothing to show if that category is hidden
+    return hiddenSet.has(String(query.categoryId)) ? { ...query, categoryId: { $in: [] } } : query;
+  }
+  return { ...query, categoryId: { $nin: hidden } };
+};
 
 // ---------------------------- Create / Append Product (Admin) ----------------------------
 export const createProduct = async (req, res) => {
@@ -147,13 +187,13 @@ export const createProduct = async (req, res) => {
     throw new Error("Please pick a category for this product.");
   }
 
-  // 1. Normalize strings to prevent case-sensitive duplicates
-  const normalizedName = normalizeText(name);
-  const normalizedBrand = normalizeText(brand);
+  // 1. Tidy the text (capitals are kept as typed)
+  const normalizedName = cleanText(name);
+  const normalizedBrand = await matchExistingBrand(cleanText(brand));
 
   // 2. Warn (don't merge) if a product with the same name, brand and category
   // already exists, so the admin decides what to do.
-  const existingProduct = await Product.findOne({
+  const existingProduct = await findDuplicate({
     name: normalizedName,
     brand: normalizedBrand,
     categoryId: category._id,
@@ -279,14 +319,19 @@ export const getProducts = async (req, res) => {
   const inStockFilter =
     req.query.inStock === "true" ? { "variants.countInStock": { $gt: 0 } } : {};
 
+  // On sale = at least one option has a sale price
+  const saleFilter =
+    req.query.onSale === "true" ? { variants: { $elemMatch: { discountedPrice: { $gt: 0 } } } } : {};
+
   // Combine all queries and filters into one master object
-  const query = {
+  const query = await withoutHiddenCategories({
     ...keyword,
     ...brandFilter,
     ...categoryFilter,
     ...featuredFilter,
     ...inStockFilter,
-  };
+    ...saleFilter,
+  });
 
   // 4. Dynamic Sorting Setup
   let sortObject = { createdAt: -1 }; // Default: Newest first
@@ -349,6 +394,7 @@ const VARIANT_FIELD_LABELS = {
   servings: "servings",
   price: "price",
   countInStock: "stock",
+  discountedPrice: "sale price",
   sku: "product code",
 };
 const VARIANT_FIELDS = Object.keys(VARIANT_FIELD_LABELS);
@@ -410,8 +456,8 @@ export const updateProduct = async (req, res) => {
 
   // 2. Plain fields (stored lowercase, same as createProduct, so duplicate
   // detection and filters keep working after an edit)
-  if (body.name) product.name = normalizeText(body.name);
-  if (body.brand !== undefined) product.brand = normalizeText(body.brand);
+  if (body.name) product.name = cleanText(body.name);
+  if (body.brand !== undefined) product.brand = await matchExistingBrand(cleanText(body.brand));
   if (body.categoryId || body.category) {
     const category = await resolveCategory(body, res);
     product.categoryId = category._id;
@@ -445,6 +491,22 @@ export const updateProduct = async (req, res) => {
   if (product.variants.length === 0) {
     res.status(400);
     throw new Error("A product needs at least one flavor or size with a price.");
+  }
+
+  // Renaming (or moving) it must not make it a copy of another product
+  if (product.isModified("name") || product.isModified("brand") || product.isModified("categoryId")) {
+    const duplicate = await findDuplicate({
+      name: product.name,
+      brand: product.brand,
+      categoryId: product.categoryId,
+      excludeId: product._id,
+    });
+    if (duplicate) {
+      res.status(409);
+      throw new Error(
+        `Another product is already called "${duplicate.name}"${duplicate.brand ? ` by ${duplicate.brand}` : ""} in this category. Please use a different name.`,
+      );
+    }
   }
 
   const updatedProduct = await product.save();
@@ -490,11 +552,14 @@ export const deleteProduct = async (req, res) => {
 // ---------------------------- Get Filters & Metadata (Public) ----------------------------
 // Public-safe: categories, brands and the number of products. No stock totals.
 export const getFiltersMetadata = async (req, res) => {
-  const [categoryIds, brands, totalProducts] = await Promise.all([
+  const visible = await withoutHiddenCategories({});
+  const [categoryIds, rawBrands, totalProducts] = await Promise.all([
     Product.distinct("categoryId", { categoryId: { $ne: null } }),
-    Product.distinct("brand", { brand: { $nin: ["", null] } }),
-    Product.countDocuments(),
+    Product.distinct("brand", { ...visible, brand: { $nin: ["", null] } }),
+    Product.countDocuments(visible),
   ]);
+  // One entry per brand, whatever the capitals
+  const brands = [...new Map(rawBrands.map((b) => [b.toLowerCase(), b])).values()];
   // The shop's categories that have products, in the admin's order (hidden
   // ones left out). "items" carries the exact link slug for each.
   const categories = await Category.find({ _id: { $in: categoryIds }, isVisible: true })

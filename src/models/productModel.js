@@ -37,6 +37,18 @@ const variantSchema = new mongoose.Schema({
   },
 });
 
+// A sale price, when set, must be above 0 and below the normal price.
+// Empty (null) means the option is not on sale.
+variantSchema.pre("validate", function () {
+  if (this.discountedPrice === undefined || this.discountedPrice === null) return;
+  if (!(this.discountedPrice > 0) || this.discountedPrice >= this.price) {
+    this.invalidate(
+      "discountedPrice",
+      `The sale price (${this.discountedPrice}) must be lower than the normal price (${this.price}) and above 0.`,
+    );
+  }
+});
+
 // ---------------------------- Main Product Schema ----------------------------
 const productSchema = new mongoose.Schema(
   {
