@@ -1,6 +1,7 @@
 import User from "../models/userModel.js";
 import PasswordReset from "../models/passwordResetModel.js";
 import generateToken from "../utils/generateToken.js";
+import { LIMITS, assertNotLimited, clear, clientIp, hit } from "../utils/rateLimit.js";
 
 // ---------------------------- User Register ----------------------------
 export const registerUser = async (req, res) => {
@@ -48,10 +49,25 @@ export const loginUser = async (req, res) => {
     throw new Error("Please provide both an email and a password");
   }
 
+  // Too many wrong passwords lately? Then don't even check this one.
+  const ip = clientIp(req);
+  const accountKey = `login:account:${ip}:${email}`;
+  const ipKey = `login:ip:${ip}`;
+  await assertNotLimited(
+    res,
+    [
+      { key: accountKey, max: LIMITS.loginPerAccount.max },
+      { key: ipKey, max: LIMITS.loginPerIp.max },
+    ],
+    "Too many wrong sign-in attempts.",
+  );
+
   const user = await User.findOne({ email }).select("+password");
 
   // Check if the user exists AND the password is correct
   if (user && (await user.matchPassword(password))) {
+    await clear(accountKey);
+
     // --- NEW: Check if the account is suspended/deactivated ---
     if (!user.isActive) {
       res.status(403);
@@ -75,6 +91,10 @@ export const loginUser = async (req, res) => {
       token: generateToken(user._id),
     });
   } else {
+    await Promise.all([
+      hit(accountKey, LIMITS.loginPerAccount.windowMs),
+      hit(ipKey, LIMITS.loginPerIp.windowMs),
+    ]);
     res.status(401);
     throw new Error("Invalid email or password");
   }
@@ -232,6 +252,22 @@ export const deactivateMyAccount = async (req, res) => {
 // the same way so the form can't be used to guess which emails have accounts.
 export const forgotPassword = async (req, res) => {
   const email = req.body.email?.trim().toLowerCase();
+
+  // Stop the form being used to flood the dashboard with requests
+  const ipKey = `forgot:ip:${clientIp(req)}`;
+  const emailKey = `forgot:email:${email}`;
+  await assertNotLimited(
+    res,
+    [
+      { key: ipKey, max: LIMITS.forgotPerIp.max },
+      { key: emailKey, max: LIMITS.forgotPerEmail.max },
+    ],
+    "Too many password-help requests.",
+  );
+  await Promise.all([
+    hit(ipKey, LIMITS.forgotPerIp.windowMs),
+    hit(emailKey, LIMITS.forgotPerEmail.windowMs),
+  ]);
   const user = email ? await User.findOne({ email }) : null;
 
   if (user && user.isActive) {

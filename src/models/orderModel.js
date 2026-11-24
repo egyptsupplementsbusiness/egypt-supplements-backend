@@ -57,13 +57,16 @@ const orderSchema = new mongoose.Schema(
     shippingFee: { type: Number, required: true, min: 0 },
     total: { type: Number, required: true, min: 0 },
     status: { type: String, enum: ORDER_STATUSES, default: "pending", index: true },
-    cancelledBy: { type: String, enum: ["customer", "admin", null], default: null },
+    // "system" = cancelled automatically because the shop never confirmed it
+    cancelledBy: { type: String, enum: ["customer", "admin", "system", null], default: null },
     statusHistory: { type: [statusChangeSchema], default: [] },
   },
   { timestamps: true },
 );
 
 orderSchema.index({ createdAt: -1 });
+// Counting a customer's orders still waiting for confirmation
+orderSchema.index({ user: 1, status: 1 });
 // Sales report groups delivered orders by date; this serves that range scan
 orderSchema.index({ status: 1, createdAt: -1 });
 // Marking a deleted product across old orders, and "has this been ordered?"

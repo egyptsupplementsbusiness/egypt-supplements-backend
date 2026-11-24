@@ -2,10 +2,10 @@ import Category, { slugify } from "../models/categoryModel.js";
 import Product from "../models/productModel.js";
 import { destroyImageIfUnused } from "../utils/cloudinaryUtils.js";
 
-// Count products per category slug, so the admin sees how many are in each one.
-const countsBySlug = async () => {
-  const rows = await Product.aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }]);
-  return Object.fromEntries(rows.map((r) => [r._id, r.count]));
+// Count products per category (by id), so the admin sees how many are in each one.
+const countsById = async () => {
+  const rows = await Product.aggregate([{ $group: { _id: "$categoryId", count: { $sum: 1 } } }]);
+  return Object.fromEntries(rows.filter((r) => r._id).map((r) => [String(r._id), r.count]));
 };
 
 // ---------------------------- Public ----------------------------
@@ -21,10 +21,10 @@ export const getPublicCategories = async (req, res) => {
 export const getAdminCategories = async (req, res) => {
   const [categories, counts] = await Promise.all([
     Category.find().sort({ order: 1, name: 1 }),
-    countsBySlug(),
+    countsById(),
   ]);
   res.status(200).json({
-    categories: categories.map((c) => ({ ...c.toObject(), productCount: counts[c.slug] || 0 })),
+    categories: categories.map((c) => ({ ...c.toObject(), productCount: counts[String(c._id)] || 0 })),
   });
 };
 
@@ -82,10 +82,10 @@ export const updateCategory = async (req, res) => {
 
   const saved = await category.save();
 
-  // If the name (slug) changed, move every product over to the new slug so
-  // nothing drops out of the category.
+  // Products are linked by the category's id, so they stay in it. Only their
+  // copy of the slug (used in links) needs refreshing.
   if (saved.slug !== oldSlug) {
-    await Product.updateMany({ category: oldSlug }, { $set: { category: saved.slug } });
+    await Product.updateMany({ categoryId: saved._id }, { $set: { category: saved.slug } });
   }
 
   // A replaced image's old file can go
@@ -106,15 +106,18 @@ export const deleteCategory = async (req, res) => {
   }
 
   const moveTo = req.query.moveTo ? slugify(req.query.moveTo) : "others";
-  const fallback = moveTo && moveTo !== category.slug && (await Category.exists({ slug: moveTo })) ? moveTo : "";
+  const fallback = moveTo && moveTo !== category.slug ? await Category.findOne({ slug: moveTo }) : null;
 
-  await Product.updateMany({ category: category.slug }, { $set: { category: fallback } });
+  await Product.updateMany(
+    { categoryId: category._id },
+    { $set: { categoryId: fallback?._id || null, category: fallback?.slug || "" } },
+  );
 
   const image = category.image;
   await category.deleteOne();
   if (image) await destroyImageIfUnused(image);
 
-  res.status(200).json({ message: "Category deleted", movedTo: fallback || null });
+  res.status(200).json({ message: "Category deleted", movedTo: fallback?.slug || null });
 };
 
 // Save a new order for the category tiles in one call (drag to reorder).

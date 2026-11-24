@@ -4,6 +4,7 @@ import app from "../src/app.js";
 import { connectDBOnce } from "../src/config/db.js";
 import { seedCategories } from "../src/models/categoryModel.js";
 import { getSettings } from "../src/models/settingsModel.js";
+import { migrateProductCategories } from "../src/utils/categoryMigration.js";
 
 const REQUIRED_ENV = ["MONGO_URI", "JWT_SECRET"];
 
@@ -16,6 +17,7 @@ const runSetupOnce = async () => {
   try {
     await getSettings();
     await seedCategories();
+    await migrateProductCategories();
   } catch (error) {
     setupDone = false;
     console.error("Setup (settings/categories) failed:", error.message);

@@ -5,6 +5,8 @@ import connectDB from "./config/db.js";
 import { scheduleImageCleanup } from "./utils/cloudinaryUtils.js";
 import { seedCategories } from "./models/categoryModel.js";
 import { getSettings } from "./models/settingsModel.js";
+import { expireStalePendingOrders } from "./controllers/orderController.js";
+import { migrateProductCategories } from "./utils/categoryMigration.js";
 
 const REQUIRED_ENV = ["MONGO_URI", "JWT_SECRET"];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
@@ -29,6 +31,7 @@ const start = async () => {
   try {
     await getSettings();
     await seedCategories();
+    await migrateProductCategories();
   } catch (error) {
     console.error("Setup (settings/categories) failed:", error.message);
   }
@@ -38,6 +41,13 @@ const start = async () => {
   });
 
   scheduleImageCleanup();
+
+  // Locally there is no Vercel Cron, so cancel week-old unconfirmed orders
+  // here: shortly after start, then once a day.
+  const expireOrders = () =>
+    expireStalePendingOrders().catch((error) => console.error("Auto-cancel failed:", error.message));
+  setTimeout(expireOrders, 60 * 1000).unref();
+  setInterval(expireOrders, 24 * 60 * 60 * 1000).unref();
 };
 
 start();

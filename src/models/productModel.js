@@ -49,9 +49,18 @@ const productSchema = new mongoose.Schema(
       type: String,
       default: "", // optional
     },
+    // The category this product belongs to, by its id. The id never changes,
+    // so renaming a category can't separate it from its products.
+    categoryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      default: null,
+    },
+    // A copy of that category's slug (e.g. "mass-gain"), kept in step by the
+    // server, for links and old clients. Never set it by hand.
     category: {
       type: String,
-      required: [true, "Please add a category"],
+      default: "",
     },
     summary: {
       type: String,
@@ -80,6 +89,7 @@ const productSchema = new mongoose.Schema(
 // Indexes to keep listing, filtering and search fast as the catalogue grows.
 productSchema.index({ createdAt: -1 });
 productSchema.index({ category: 1 });
+productSchema.index({ categoryId: 1 });
 productSchema.index({ brand: 1 });
 productSchema.index({ isFeatured: 1 });
 productSchema.index({ name: 1 });

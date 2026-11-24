@@ -2,6 +2,7 @@ import Order from "../models/orderModel.js";
 import Product from "../models/productModel.js";
 import Cart from "../models/cartModel.js";
 import { getSettings, shippingFor, publicSettings } from "../models/settingsModel.js";
+import { MAX_PENDING_ORDERS_PER_ACCOUNT, PENDING_ORDER_EXPIRY_DAYS } from "../config/constants.js";
 
 // ---------------------------- Helpers ----------------------------
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -61,6 +62,17 @@ export const getShopSettings = async (req, res) => {
 // ---------------------------- Place an order (customer) ----------------------------
 export const createOrder = async (req, res) => {
   const { items: requested, shippingAddress } = req.body;
+
+  // One account can only have a few orders waiting for confirmation at once,
+  // so nobody can hold all the stock with orders they never mean to take.
+  const waiting = await Order.countDocuments({ user: req.user._id, status: "pending" });
+  if (waiting >= MAX_PENDING_ORDERS_PER_ACCOUNT) {
+    res.status(429);
+    throw new Error(
+      `You already have ${waiting} orders waiting for the shop to confirm them. ` +
+        "Please wait until we confirm one (we'll contact you), or cancel one from My orders, then try again.",
+    );
+  }
 
   // Merge duplicate lines (same product option added twice)
   const merged = new Map();
@@ -198,10 +210,50 @@ export const cancelMyOrder = async (req, res) => {
   res.status(200).json({ message: "Order cancelled", order });
 };
 
+// ---------------------------- Auto-cancel old unconfirmed orders ----------------------------
+// An order still "pending" after PENDING_ORDER_EXPIRY_DAYS is cancelled by the
+// system and its items go back into stock. Runs once a day (Vercel Cron, see
+// app.js) and, at most once an hour, when the admin opens the orders list.
+export const expireStalePendingOrders = async () => {
+  const cutoff = new Date(Date.now() - PENDING_ORDER_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+  const stale = await Order.find({ status: "pending", createdAt: { $lt: cutoff } }).select("_id").lean();
+
+  let cancelled = 0;
+  for (const { _id } of stale) {
+    // Only if it's still pending right now (the admin may be confirming it)
+    const order = await Order.findOneAndUpdate(
+      { _id, status: "pending" },
+      {
+        $set: { status: "cancelled", cancelledBy: "system" },
+        $push: { statusHistory: { status: "cancelled", by: "system", at: new Date() } },
+      },
+      { returnDocument: "after" },
+    );
+    if (!order) continue;
+    await returnStock(order.items);
+    cancelled += 1;
+  }
+  if (cancelled > 0) console.log(`⏰ Auto-cancelled ${cancelled} order(s) not confirmed within ${PENDING_ORDER_EXPIRY_DAYS} days`);
+  return { checked: stale.length, cancelled };
+};
+
+let lastExpiryRun = 0;
+const expireStaleOrdersNowAndThen = async () => {
+  if (Date.now() - lastExpiryRun < 60 * 60 * 1000) return;
+  lastExpiryRun = Date.now();
+  try {
+    await expireStalePendingOrders();
+  } catch (error) {
+    lastExpiryRun = 0;
+    console.error("Auto-cancel of old orders failed:", error.message);
+  }
+};
+
 // ---------------------------- All orders (admin) ----------------------------
 const ACTIVE_STATUSES = ["pending", "processing", "shipped"];
 
 export const getAllOrders = async (req, res) => {
+  await expireStaleOrdersNowAndThen();
   const pageSize = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
   const page = Math.max(Math.floor(Number(req.query.page)) || 1, 1);
 
@@ -301,6 +353,7 @@ export const updateOrderStatus = async (req, res) => {
 
 // ---------------------------- Numbers for the admin home ----------------------------
 export const getOrderSummary = async (req, res) => {
+  await expireStaleOrdersNowAndThen();
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 

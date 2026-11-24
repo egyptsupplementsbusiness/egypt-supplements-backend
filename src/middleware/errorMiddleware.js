@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import multer from "multer";
+import { IS_PRODUCTION } from "../config/env.js";
 
 export const notFound = (req, res, next) => {
   const error = new Error(`Not Found - ${req.originalUrl}`);
@@ -65,9 +66,16 @@ export const errorHandler = (err, req, res, next) => {
     message = "Invalid JSON in request body";
   }
 
+  // An unexpected crash (a bug or a database problem): on the live site, keep
+  // the technical details in the server log and show the visitor a plain message.
+  if (statusCode === 500) {
+    console.error(`💥 ${req.method} ${req.originalUrl}:`, err);
+    if (IS_PRODUCTION) message = "Something went wrong on our side. Please try again in a moment.";
+  }
+
   res.status(statusCode).json({
     message: message,
-    // Only expose stack traces when explicitly running in development
-    stack: process.env.NODE_ENV === "development" ? err.stack : null,
+    // Only expose stack traces when running on this computer in development
+    stack: !IS_PRODUCTION && process.env.NODE_ENV === "development" ? err.stack : null,
   });
 };
